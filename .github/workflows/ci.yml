@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  # Every package built here is 0.1.<run number> (Directory.Build.props).
+  AGENTKIT_BUILD_NUMBER: ${{ github.run_number }}
+
+jobs:
+  test:
+    name: build and test (PostgreSQL 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      AGENTKIT_TEST_ADMIN_CONNECTION: Host=localhost;Username=postgres;Password=postgres;Database=postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet build AgentKit.slnx -c Release
+      - run: dotnet test --project tests/AgentKit.McpOAuth.Tests -c Release --no-build
+      # Packing on every run surfaces packaging errors before any publish key exists.
+      - run: dotnet pack AgentKit.slnx -c Release --no-build -o artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: publish to nuget.org
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # A secret cannot gate a job's `if`; mapped to env, an absent secret is an empty string the step can test.
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: artifacts
+      - name: No NUGET_API_KEY secret yet
+        if: env.NUGET_API_KEY == ''
+        run: echo "::notice::NUGET_API_KEY is not set on this repository, so nothing is published. The packages are attached to this run."
+      - uses: actions/setup-dotnet@v4
+        if: env.NUGET_API_KEY != ''
+        with:
+          dotnet-version: 10.0.x
+      - name: Push packages
+        if: env.NUGET_API_KEY != ''
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
