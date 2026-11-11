@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.McpOAuth</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.McpOAuth</PackageId>
+    <Description>An OAuth 2.1 authorization server for a remote MCP server, on OpenIddict: authorization code with PKCE S256 only, hashed reference tokens, audience pinned to the MCP endpoint, RFC 8707 resource indicators, RFC 9728 discovery, client id metadata documents, a POST-only owner consent page and per-call revocation. The host keeps its connections; the package keeps the protocol.</Description>
+    <PackageTags>mcp;oauth;oauth2;openiddict;authorization-server;pkce;aspnetcore</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="OpenIddict.AspNetCore" Version="7.8.0" />
+    <PackageReference Include="OpenIddict.EntityFrameworkCore" Version="7.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Schema\mcp-oauth.sql" LogicalName="AgentKit.McpOAuth.Schema.mcp-oauth.sql" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
