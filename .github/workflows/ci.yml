@@ -42,6 +42,7 @@ jobs:
           global-json-file: global.json
       - run: dotnet build AgentKit.slnx -c Release
       - run: dotnet test --project tests/AgentKit.McpOAuth.Tests -c Release --no-build
+      - run: dotnet test --project tests/AgentKit.ProviderSignIn.Tests -c Release --no-build
       # Packing on every run surfaces packaging errors before any publish key exists.
       - run: dotnet pack AgentKit.slnx -c Release --no-build -o artifacts
       - uses: actions/upload-artifact@v4

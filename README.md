@@ -11,7 +11,7 @@ small interfaces the host implements.
 | Package | What | Status |
 | --- | --- | --- |
 | NuGet [`AgentKit.McpOAuth`](src/AgentKit.McpOAuth/README.md) | MCP authorization server on OpenIddict. PKCE S256, hashed reference tokens, audience pinning, RFC 9728 discovery, a POST-only consent gate, uncached per-call revocation, issuer pinning behind a proxy | **built** |
-| NuGet `AgentKit.ProviderSignIn` | Server-driven Google and Discord sign-in. Single-use state and nonce, an ID token check, binding by provider account id (never email) | planned |
+| NuGet [`AgentKit.ProviderSignIn`](src/AgentKit.ProviderSignIn/README.md) | Server-driven Google and Discord sign-in. PKCE S256, a single-use state bound to the browser, an ID token check with nonce, a verified (provider, account id) for the host to bind, never matched by email | **built** |
 | NuGet `AgentKit.Postgres` | Append-only guard, worker-cursor leases, a run-once migrator | planned |
 | NuGet `AgentKit.Storage` | S3 SigV4 query presigner that signs Content-Length | planned |
 | npm `@agentkit/tooling` | Railway CLI wrapper, a ship-gate core, bundle budgets, a theme contrast check | planned |
@@ -41,6 +41,24 @@ app.MapMcpOAuth();
 The [package README](src/AgentKit.McpOAuth/README.md) covers the full contract: what the host implements, the schema,
 revocation and operational notes.
 
+## AgentKit.ProviderSignIn in short
+
+```csharp
+builder.Services.AddProviderSignIn(o =>
+{
+    o.PublicUrl = "https://app.example.com";      // redirect URIs: <it>/api/auth/{google,discord}/callback
+    o.Google.ClientId = …; o.Google.ClientSecret = …;     // each provider optional
+    o.Discord.ClientId = …; o.Discord.ClientSecret = …;
+    o.ConnectionString = connectionString;        // optional; schema from ProviderSignInSchema.ReadScript()
+});
+builder.Services.AddScoped<IProviderSignInCompletion, MySignIn>();  // (provider, account id) → your user, your session
+
+app.MapProviderSignIn();                          // /api/auth/providers, /{provider}/start, /{provider}/callback
+```
+
+The [package README](src/AgentKit.ProviderSignIn/README.md) covers purposes (setup, bind), the state store and the
+provider consoles.
+
 ## Develop
 
 - **Requirements.** The .NET 10 SDK and a local PostgreSQL.
@@ -55,8 +73,13 @@ dotnet build AgentKit.slnx
 dotnet test --project tests/AgentKit.McpOAuth.Tests
 ```
 
+```bash
+dotnet test --project tests/AgentKit.ProviderSignIn.Tests
+```
+
 The tests are blackbox: a minimal host uses the package exactly as a product would, and every assertion goes through
-HTTP.
+HTTP. ProviderSignIn's tests talk to stub Google and Discord servers behind the package's HttpClient; the stubs check
+the client secret, the redirect URI and the PKCE verifier as the real ones do.
 
 ## Versions and publishing
 

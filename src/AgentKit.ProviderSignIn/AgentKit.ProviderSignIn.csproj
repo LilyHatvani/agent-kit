@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.ProviderSignIn</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.ProviderSignIn</PackageId>
+    <Description>Server-driven Google and Discord sign-in for ASP.NET Core: the server is the relying party (authorization code with PKCE S256, one registered redirect per provider, a single-use state bound to the browser, Google's ID token checked for issuer, audience, expiry and nonce, Discord's user id read from its API, no provider tokens kept). It hands the host a verified (provider, account id); who that is stays the host's decision, never matched by email.</Description>
+    <PackageTags>oauth;oauth2;openid-connect;google;discord;sign-in;pkce;aspnetcore</PackageTags>
+    <!-- CA1873: the Information lines pass a route value and a short string; guarding each with IsEnabled buys nothing. -->
+    <NoWarn>$(NoWarn);CA1873</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Schema\provider-signin.sql" LogicalName="AgentKit.ProviderSignIn.Schema.provider-signin.sql" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

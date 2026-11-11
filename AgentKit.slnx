@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/AgentKit.McpOAuth/AgentKit.McpOAuth.csproj" />
+    <Project Path="src/AgentKit.ProviderSignIn/AgentKit.ProviderSignIn.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentKit.McpOAuth.Tests/AgentKit.McpOAuth.Tests.csproj" />
+    <Project Path="tests/AgentKit.ProviderSignIn.Tests/AgentKit.ProviderSignIn.Tests.csproj" />
   </Folder>
 </Solution>
