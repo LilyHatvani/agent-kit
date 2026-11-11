@@ -57,7 +57,7 @@ jobs:
     # Trusted Publishing, no stored API key (owner, 2026-11-11): nuget.org trusts this workflow through GitHub's OIDC
     # token, under the owner's nuget.org policy (repository owner LilyHatvani, repository agent-kit, workflow ci.yml).
     # The repository variable NUGET_USER (the nuget.org profile name) switches it on; unset, this job is skipped.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && vars.NUGET_USER != ''
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop' && vars.NUGET_USER != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
