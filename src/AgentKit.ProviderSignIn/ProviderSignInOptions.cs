@@ -152,10 +152,11 @@ public sealed class DiscordSignInOptions : ProviderClientOptions
     public string UserEndpoint { get; set; } = "https://discord.com/api/users/@me";
 
     /// <summary>
-    /// Discord's <c>prompt</c>. Default <c>none</c>: an account that already authorized the app goes straight back, so a
-    /// daily sign-in is one tap. <c>consent</c> asks every time. Null sends none.
+    /// Discord's <c>prompt</c>. Default null: not sent, and Discord shows its authorization screen. <c>none</c> sends an
+    /// account that already authorized the app straight back (a one-tap daily sign-in), but Discord does not document what
+    /// it does for an account that has not authorized yet (a first setup), so try it before relying on it.
     /// </summary>
-    public string? Prompt { get; set; } = "none";
+    public string? Prompt { get; set; }
 
     internal override void Validate(string name)
     {

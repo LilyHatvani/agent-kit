@@ -26,6 +26,9 @@ The package proves which provider account signed in. Your app decides who that i
   - The nonce of this very sign-in, so a code injected from another authorization request is refused.
   - The account id is the token's `sub`.
 - **Discord: the user id is read from `/users/@me`** with the access token, and must be a snowflake.
+  - PKCE parameters are sent to Discord too. Its OAuth2 page recommends PKCE but does not document `code_challenge` or
+    `code_verifier`, so for Discord the protection rests on the client secret, the state and the cookie. A provider
+    that ignores PKCE ignores the parameters; one that checks them gets the right ones.
 - **No provider tokens are kept.** The access token is used once (Discord's user read) and dropped. Nothing is
   refreshed or stored.
 - **Each provider is optional.** It is enabled only when its client id and secret are both set. `GET providers` lists
@@ -154,7 +157,7 @@ after 10 minutes and are swept on the next start.
 | `Google.Scope` | `openid email profile` | |
 | `Google.Issuers` | Google's two spellings | |
 | `Discord.Scope` | `identify` | add `email` for the email hint |
-| `Discord.Prompt` | `none` | an account that already authorized the app goes straight back |
+| `Discord.Prompt` | none sent | `none` sends an account that already authorized the app straight back; Discord does not document it for a first authorization |
 | `*.AuthorizeEndpoint`, `*.TokenEndpoint`, `Google.JwksUri`, `Discord.UserEndpoint` | the providers' own | for tests and proxies |
 
 Every provider call goes through the named `HttpClient` `ProviderSignInDefaults.HttpClientName`. Tests replace its

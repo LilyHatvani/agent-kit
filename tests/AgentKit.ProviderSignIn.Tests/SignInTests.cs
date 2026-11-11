@@ -118,6 +118,10 @@ public sealed class SignInTests(SignInDatabase database)
     [InlineData("/\\evil.example", null)]
     [InlineData("https://app.test.evil.example/", null)]
     [InlineData("http://app.test/downgraded", null)]
+    [InlineData(SignInHost.PublicUrl + "//evil.example/phish", null)]
+    [InlineData(SignInHost.PublicUrl + "/.//evil.example/phish", null)]
+    [InlineData("/.//evil.example/phish", null)]
+    [InlineData("/a/..//evil.example/phish", null)]
     public async Task ReturnTo_IsKeptOnlyAsAPathOnThisSite(string returnTo, string? expected)
     {
         using var providers = new FakeProviders();

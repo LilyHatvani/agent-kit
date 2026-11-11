@@ -258,16 +258,27 @@ public sealed class ProviderSignInFlow
 
     private static bool InTrouble(HttpStatusCode status) => (int)status >= 500 || status == HttpStatusCode.TooManyRequests;
 
-    /// <summary>A path on this site to return to, or null: a local path, or an absolute URL on the public origin reduced to its path and query.</summary>
+    /// <summary>
+    /// A path on this site to return to, or null: a local path, or an absolute URL on the public origin, either one resolved
+    /// (dot segments removed) and reduced to its path and query. A result that starts with <c>//</c> is refused: a host that
+    /// redirects to it would send the browser to that host (<c>https://site//evil.example</c>, <c>/.//evil.example</c>).
+    /// </summary>
     private string? LocalReturnTo(string? value)
     {
         if (string.IsNullOrEmpty(value) || value.Length > 2048 || value.Any(char.IsControl) || value.Contains('\\', StringComparison.Ordinal)) return null;
-        if (value[0] == '/') return value.StartsWith("//", StringComparison.Ordinal) ? null : value;
         var publicUrl = _options.PublicUri!;
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri) && string.IsNullOrEmpty(uri.UserInfo)
-               && Uri.Compare(uri, publicUrl, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) == 0
-            ? uri.PathAndQuery
-            : null;
+        Uri? uri;
+        if (value[0] == '/')
+        {
+            if (value.StartsWith("//", StringComparison.Ordinal) || !Uri.TryCreate(new Uri(publicUrl.GetLeftPart(UriPartial.Authority)), value, out uri)) return null;
+        }
+        else if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || !string.IsNullOrEmpty(uri.UserInfo))
+        {
+            return null;
+        }
+        if (Uri.Compare(uri, publicUrl, UriComponents.SchemeAndServer, UriFormat.UriEscaped, StringComparison.OrdinalIgnoreCase) != 0) return null;
+        var local = uri.PathAndQuery;
+        return local.StartsWith('/') && !local.StartsWith("//", StringComparison.Ordinal) ? local : null;
     }
 
     private static string Random() => Base64Url(RandomNumberGenerator.GetBytes(32));
