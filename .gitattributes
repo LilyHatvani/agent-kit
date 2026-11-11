@@ -1,0 +1,16 @@
+# Text files are stored and checked out with LF.
+* text=auto eol=lf
+
+# Shell scripts and git hooks must stay LF: a CRLF shebang breaks them on POSIX shells and in container images.
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# Binary assets: never diffed or normalised as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.snk binary
+*.nupkg binary
+*.snupkg binary

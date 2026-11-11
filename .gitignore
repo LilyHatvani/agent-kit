@@ -1,0 +1,42 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+*.nupkg
+*.snupkg
+
+# Test and coverage output
+[Tt]est[Rr]esult*/
+coverage/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Claude Code: local and ephemeral
+.claude/worktrees/
+.claude/plans/
+.claude/settings.local.json
+.claude/launch.json
+CLAUDE.local.md
+
+# Editors
+.vs/
+.idea/
+*.swp
+*.suo
+*.user
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

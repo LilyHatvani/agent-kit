@@ -1,0 +1,43 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <!-- CA1848: LoggerMessage delegates buy nothing for the few Warning lines here. -->
+    <NoWarn>$(NoWarn);CA1848</NoWarn>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!--
+    Version: nobody bumps it by hand. CI sets AGENTKIT_BUILD_NUMBER (the workflow's run number), so every published
+    package is 0.1.<run>. A local build is 0.1.0-dev. Raise the prefix here when the API earns a 0.2.
+  -->
+  <PropertyGroup>
+    <AgentKitVersionPrefix>0.1</AgentKitVersionPrefix>
+    <Version Condition="'$(AGENTKIT_BUILD_NUMBER)' != ''">$(AgentKitVersionPrefix).$(AGENTKIT_BUILD_NUMBER)</Version>
+    <Version Condition="'$(AGENTKIT_BUILD_NUMBER)' == ''">$(AgentKitVersionPrefix).0-dev</Version>
+  </PropertyGroup>
+
+  <!-- Package metadata, shared by every package in the repository. SourceLink ships with the .NET SDK. -->
+  <PropertyGroup>
+    <Authors>Lenka Scherfel</Authors>
+    <Copyright>Copyright (c) 2026 Lenka Scherfel</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/LilyHatvani/agent-kit</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/LilyHatvani/agent-kit</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>
