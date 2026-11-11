@@ -56,6 +56,7 @@ builder.Services.AddMcpOAuth(o =>
 builder.Services.AddScoped<IMcpConnectionStore, MyConnections>();
 builder.Services.AddSingleton<IMcpConsentOwner>(
     new McpSecretOwnerCheck(() => builder.Configuration["OwnerToken"]));   // interim; see below
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 app.UseMcpOAuth();          // issuer pinning and metadata documents, before anything reads the request
@@ -100,7 +101,8 @@ then `WriteMcpOAuthChallengeAsync(presented)` for the 401.
 ### Schema
 
 The package never migrates. Run `McpOAuthSchema.ReadScript()` once with your own migrator. It creates OpenIddict's four
-tables and `oauth_key`, all `IF NOT EXISTS`. No EF migrations are involved. The role your app connects as needs SELECT,
+tables and `oauth_key`, all `IF NOT EXISTS`. No EF migrations are involved. Apply it before the host starts:
+the seeded clients are written at start. The role your app connects as needs SELECT,
 INSERT, UPDATE and DELETE on `McpOAuthSchema.Tables`.
 
 ### Operational notes

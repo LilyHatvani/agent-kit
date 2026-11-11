@@ -9,6 +9,24 @@ namespace AgentKit.McpOAuth.Tests;
 public sealed class TokenTests(OAuthApp app)
 {
     [Fact]
+    public async Task IssuedTokens_AreOpaqueReferences_StoredOnlyByHash()
+    {
+        var c = await ConnectAsync(app, app.Host, "claude-ai", ClaudeAiCallback);
+        foreach (var token in new[] { c.AccessToken, c.RefreshToken })
+        {
+            Assert.DoesNotContain(".", token, StringComparison.Ordinal); // not a JWT: nothing to decode or verify offline
+            await using var conn = new Npgsql.NpgsqlConnection(app.ConnectionString);
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
+            await using var cmd = new Npgsql.NpgsqlCommand("""
+                SELECT count(*) FROM "OpenIddictTokens"
+                WHERE "ReferenceId" = @t OR "Payload" LIKE '%' || @t || '%' OR "Id" = @t
+                """, conn);
+            cmd.Parameters.AddWithValue("t", token);
+            Assert.Equal(0L, (long)(await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken))!);
+        }
+    }
+
+    [Fact]
     public async Task TokenExchange_WithTheWrongVerifier_IsRefused()
     {
         using var http = app.Host.Browser();
