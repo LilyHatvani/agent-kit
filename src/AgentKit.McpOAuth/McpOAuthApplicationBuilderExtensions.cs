@@ -33,8 +33,10 @@ public static class McpOAuthApplicationBuilderExtensions
     /// builds discovery URLs from the request, and behind a TLS-terminating proxy the request is plain http on an internal
     /// host: unpinned, discovery advertises the wrong origin and OpenIddict refuses http outright. The configured origin
     /// wins, whatever arrived; no X-Forwarded-* header is trusted. TLS stays the proxy's job.
-    /// Also fetches a client id metadata document before OpenIddict validates the authorize request that names it, and
-    /// logs an unknown client at Warning (OpenIddict's own refusal logs below that).
+    /// On <c>/oauth/authorize</c> (any case, trailing slash or not, GET and POST) it then applies
+    /// <see cref="McpOAuthOptions.AuthorizeRateLimiter"/> (429), refuses a client id written as a URL but not canonically
+    /// (400), fetches a client id metadata document (cached) before OpenIddict validates the authorize request that
+    /// names it, and logs an unknown client at Warning (OpenIddict's own refusal logs below that).
     /// </summary>
     public static IApplicationBuilder UseMcpOAuth(this IApplicationBuilder app)
     {
@@ -55,11 +57,46 @@ public static class McpOAuthApplicationBuilderExtensions
         });
 
         var clients = app.ApplicationServices.GetRequiredService<McpOAuthClients>();
+        var limiter = app.ApplicationServices.GetRequiredService<McpOAuthOptions>().AuthorizeRateLimiter;
         var log = app.ApplicationServices.GetRequiredService<ILoggerFactory>().CreateLogger("AgentKit.McpOAuth");
         app.Use(async (ctx, next) =>
         {
-            if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path.Equals(McpOAuthDefaults.AuthorizePath)
-                && ctx.Request.Query[Parameters.ClientId].ToString() is { Length: > 0 } clientId)
+            // Routing also answers the path with a trailing slash, and in any case.
+            if (!(ctx.Request.Path.Value ?? "").TrimEnd('/').Equals(McpOAuthDefaults.AuthorizePath, StringComparison.OrdinalIgnoreCase))
+            {
+                await next(ctx);
+                return;
+            }
+
+            using var lease = limiter is null ? null : await limiter.AcquireAsync(ctx, 1, ctx.RequestAborted);
+            if (lease is { IsAcquired: false })
+            {
+                ctx.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                if (lease.TryGetMetadata(System.Threading.RateLimiting.MetadataName.RetryAfter, out var retryAfter))
+                    ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                await ctx.Response.WriteAsJsonAsync(new Dictionary<string, string>
+                {
+                    ["error"] = Errors.TemporarilyUnavailable,
+                    ["error_description"] = "Too many authorization requests. Try again later.",
+                }, ctx.RequestAborted);
+                return;
+            }
+
+            var form = HttpMethods.IsPost(ctx.Request.Method) && ctx.Request.HasFormContentType ? await ctx.Request.ReadFormAsync(ctx.RequestAborted) : null;
+            var given = form is not null && form.ContainsKey(Parameters.ClientId) ? form[Parameters.ClientId] : ctx.Request.Query[Parameters.ClientId];
+            if (given.ToString() is { Length: > 0 } anyClientId && McpOAuthClients.IsNonCanonicalUrlClientId(anyClientId))
+            {
+                // Never fetched or stored under an alias now, but a row an earlier version stored that way must not be used.
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await ctx.Response.WriteAsJsonAsync(new Dictionary<string, string>
+                {
+                    ["error"] = Errors.InvalidClient,
+                    ["error_description"] = "A client_id URL must be written in its canonical form.",
+                }, ctx.RequestAborted);
+                return;
+            }
+
+            if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Query[Parameters.ClientId].ToString() is { Length: > 0 } clientId)
             {
                 var apps = ctx.RequestServices.GetRequiredService<IOpenIddictApplicationManager>();
                 if (clients.IsMetadataDocumentId(clientId, out _))

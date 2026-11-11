@@ -109,6 +109,16 @@ public static partial class OAuthDriver
 
     public static FormUrlEncodedContent Form(Dictionary<string, string> fields) => new(fields);
 
+    /// <summary>The cookies this browser holds for the host, as a Cookie header: what it sends to whichever replica serves it.</summary>
+    public static async Task<string> CookiesOf(HttpClient http)
+    {
+        // The jar only replays cookies; read them back from what it sends.
+        using var echo = new HttpRequestMessage(HttpMethod.Get, "/.well-known/oauth-protected-resource");
+        var r = await http.SendAsync(echo);
+        Assert.True(r.IsSuccessStatusCode);
+        return echo.Headers.TryGetValues("Cookie", out var values) ? string.Join("; ", values) : "";
+    }
+
     public static async Task<JsonObject> Json(HttpResponseMessage r)
     {
         var body = await r.Content.ReadAsStringAsync();

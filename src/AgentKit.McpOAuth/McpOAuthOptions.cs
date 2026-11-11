@@ -37,11 +37,37 @@ public sealed class McpOAuthOptions
 
     /// <summary>
     /// Hosts whose client id metadata documents are trusted (exact host match, https only), such as <c>claude.ai</c>
-    /// and <c>chatgpt.com</c>. A client id that is an https URL on one of them is fetched on each authorize request
-    /// and stored as an ordinary public client; every redirect it names must share its origin or be loopback. Empty
-    /// turns metadata documents off, and discovery then does not advertise them. There is no dynamic registration.
+    /// and <c>chatgpt.com</c>. A client id that is an https URL on one of them, written canonically, is fetched on an
+    /// authorize request (at most once per <see cref="MetadataDocumentCacheLifetime"/>) and stored as an ordinary public
+    /// client; every redirect it names must share its origin or be a literal loopback address. Any path on the host is
+    /// trusted, so list only hosts where nobody else can publish a JSON document. Empty turns metadata documents off, and
+    /// discovery then does not advertise them. There is no dynamic registration.
     /// </summary>
     public IList<string> MetadataDocumentHosts { get; } = [];
+
+    /// <summary>
+    /// How long a fetched metadata document is trusted before the next authorize request fetches it again. Default
+    /// 5 minutes; zero fetches on every authorize request.
+    /// </summary>
+    public TimeSpan MetadataDocumentCacheLifetime { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How long a metadata document that could not be fetched or was refused is not fetched again. Default 1 minute; zero
+    /// fetches on every authorize request. A client stored earlier keeps working meanwhile.
+    /// </summary>
+    public TimeSpan MetadataDocumentFailureCacheLifetime { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>How many metadata document URLs the cache remembers (found or not). Default 1000; when full, the oldest leaves.</summary>
+    public int MetadataDocumentCacheSize { get; set; } = 1000;
+
+    /// <summary>
+    /// An optional limit on <c>/oauth/authorize</c> (GET and POST, every spelling of the path), checked before anything
+    /// else there: before a metadata document is fetched, the owner check runs or a grant is made. A refused request gets
+    /// 429 with <c>Retry-After</c> when the limiter says when. Null (the default) limits nothing. Partition it by what the
+    /// host trusts to tell clients apart (the remote address behind a forwarded-headers middleware, say). The host owns
+    /// and disposes it.
+    /// </summary>
+    public System.Threading.RateLimiting.PartitionedRateLimiter<Microsoft.AspNetCore.Http.HttpContext>? AuthorizeRateLimiter { get; set; }
 
     /// <summary>Access token lifetime. Default 60 minutes.</summary>
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(60);
@@ -63,6 +89,10 @@ public sealed class McpOAuthOptions
             throw new InvalidOperationException("McpOAuthOptions.Scope must be one scope name without spaces.");
         foreach (var lifetime in new[] { AccessTokenLifetime, RefreshTokenLifetime, AuthorizationCodeLifetime, ConsentLifetime })
             if (lifetime <= TimeSpan.Zero) throw new InvalidOperationException("McpOAuthOptions lifetimes must be positive.");
+        if (MetadataDocumentCacheLifetime < TimeSpan.Zero || MetadataDocumentFailureCacheLifetime < TimeSpan.Zero)
+            throw new InvalidOperationException("McpOAuthOptions metadata document cache lifetimes must not be negative.");
+        if (MetadataDocumentCacheSize < 1)
+            throw new InvalidOperationException("McpOAuthOptions.MetadataDocumentCacheSize must be at least 1.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var client in Clients)
         {

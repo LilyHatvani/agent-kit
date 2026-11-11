@@ -43,6 +43,11 @@ public sealed class OAuthApp : IAsyncLifetime
     /// <summary>What the fake web serves to metadata document fetches: URL → JSON.</summary>
     public ConcurrentDictionary<string, string> MetadataDocuments { get; } = new();
 
+    /// <summary>How often the fake web was asked for each URL, by every host on this database.</summary>
+    public ConcurrentDictionary<string, int> Fetches { get; } = new();
+
+    public int FetchCount(string url) => Fetches.GetValueOrDefault(url);
+
     public McpHost Host { get; private set; } = null!;
 
     public async ValueTask InitializeAsync()
@@ -68,8 +73,10 @@ public sealed class OAuthApp : IAsyncLifetime
     }
 
     /// <summary>Another host process on the same database: a replica, another origin, or the server off (null).</summary>
-    public Task<McpHost> StartHostAsync(string? publicUrl, IMcpConsentOwner? owner = null) =>
-        McpHost.StartAsync(publicUrl, ConnectionString, Book, owner ?? new McpSecretOwnerCheck(() => OwnerSecret), MetadataDocuments);
+    public Task<McpHost> StartHostAsync(string? publicUrl, IMcpConsentOwner? owner = null, Action<McpOAuthOptions>? options = null,
+        TimeProvider? clock = null) =>
+        McpHost.StartAsync(publicUrl, ConnectionString, Book, owner ?? new McpSecretOwnerCheck(() => OwnerSecret),
+            new FakeWeb(MetadataDocuments, Fetches), options, clock);
 
     private static async Task AdminExec(string sql)
     {
@@ -91,7 +98,7 @@ public sealed class McpHost : IAsyncDisposable
     private McpHost(WebApplication app) => _app = app;
 
     public static async Task<McpHost> StartAsync(string? publicUrl, string connectionString, ConnectionBook book, IMcpConsentOwner owner,
-        ConcurrentDictionary<string, string> documents)
+        FakeWeb web, Action<McpOAuthOptions>? configure = null, TimeProvider? clock = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Development" });
         builder.WebHost.UseTestServer();
@@ -108,11 +115,13 @@ public sealed class McpHost : IAsyncDisposable
             o.Clients.Add(McpOAuthClient.ClaudeCode);
             o.MetadataDocumentHosts.Add("claude.ai");
             o.MetadataDocumentHosts.Add("chatgpt.com");
+            configure?.Invoke(o);
         });
+        if (clock is not null) builder.Services.AddSingleton(clock);
         builder.Services.AddSingleton<IMcpConnectionStore>(new BookStore(book));
         builder.Services.AddSingleton(owner);
         // Metadata documents come from the fake web, never the network.
-        builder.Services.AddHttpClient(McpOAuthDefaults.MetadataHttpClientName).ConfigurePrimaryHttpMessageHandler(() => new FakeWeb(documents));
+        builder.Services.AddHttpClient(McpOAuthDefaults.MetadataHttpClientName).ConfigurePrimaryHttpMessageHandler(() => web);
 
         var app = builder.Build();
         app.UseMcpOAuth();
@@ -135,10 +144,11 @@ public sealed class McpHost : IAsyncDisposable
         return new McpHost(app);
     }
 
-    /// <summary>A browser: no redirects followed, no cookies kept.</summary>
+    /// <summary>A browser: no redirects followed; it keeps the cookies this host sets, and sends <paramref name="cookie"/> too.</summary>
     public HttpClient Browser(string? cookie = null)
     {
-        var http = _app.GetTestServer().CreateClient();
+        var server = _app.GetTestServer();
+        var http = new HttpClient(new CookieJar(server.CreateHandler())) { BaseAddress = server.BaseAddress };
         http.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/json");
         if (cookie is not null) http.DefaultRequestHeaders.Add("Cookie", cookie);
         return http;
@@ -261,11 +271,57 @@ public sealed class CookieOwner : IMcpConsentOwner
             : McpOwnerCheck.SignIn("/signin?return=" + Uri.EscapeDataString(request.ReturnUrl)));
 }
 
-/// <summary>The outside web as the metadata fetch sees it: a fixed table of documents, 404 otherwise.</summary>
-public sealed class FakeWeb(ConcurrentDictionary<string, string> documents) : HttpMessageHandler
+/// <summary>The outside web as the metadata fetch sees it: a fixed table of documents, 404 otherwise. It counts every request.</summary>
+public sealed class FakeWeb(ConcurrentDictionary<string, string> documents, ConcurrentDictionary<string, int> fetches) : HttpMessageHandler
 {
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-        Task.FromResult(documents.TryGetValue(request.RequestUri!.AbsoluteUri, out var json)
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!.AbsoluteUri;
+        fetches.AddOrUpdate(url, 1, (_, n) => n + 1);
+        return Task.FromResult(documents.TryGetValue(url, out var json)
             ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }
             : new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
+}
+
+/// <summary>
+/// A browser's cookie store, reduced to what these tests need: it keeps what the server sets and sends it back, Secure
+/// or not (TestServer's origin is http), next to any Cookie header the request already carries.
+/// </summary>
+public sealed class CookieJar(HttpMessageHandler inner) : DelegatingHandler(inner)
+{
+    private readonly ConcurrentDictionary<string, string> _cookies = new();
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (!_cookies.IsEmpty)
+        {
+            var mine = string.Join("; ", _cookies.Select(kv => kv.Key + "=" + kv.Value));
+            var existing = request.Headers.TryGetValues("Cookie", out var values) ? string.Join("; ", values) : null;
+            request.Headers.Remove("Cookie");
+            request.Headers.TryAddWithoutValidation("Cookie", existing is null ? mine : existing + "; " + mine);
+        }
+        var response = await base.SendAsync(request, cancellationToken);
+        if (response.Headers.TryGetValues("Set-Cookie", out var set))
+            foreach (var line in set)
+            {
+                var pair = line.Split(';', 2)[0];
+                var eq = pair.IndexOf('=', StringComparison.Ordinal);
+                if (eq <= 0) continue;
+                var (name, value) = (pair[..eq].Trim(), pair[(eq + 1)..].Trim());
+                if (value.Length == 0 || line.Contains("max-age=0", StringComparison.OrdinalIgnoreCase)) _cookies.TryRemove(name, out _);
+                else _cookies[name] = value;
+            }
+        return response;
+    }
+}
+
+/// <summary>A clock the test moves by hand.</summary>
+public sealed class ManualClock : TimeProvider
+{
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+    public override DateTimeOffset GetUtcNow() => _now;
+
+    public void Advance(TimeSpan by) => _now += by;
 }

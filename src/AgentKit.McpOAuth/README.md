@@ -21,14 +21,28 @@ The package handles the protocol. Your app stores the connections and decides wh
   - Every `/mcp` 401 carries `WWW-Authenticate: Bearer … resource_metadata="…"`.
   - RFC 9207: every authorization response includes `iss`.
 - **Clients.**
-  - Seeded clients you list. A loopback redirect matches on any port (RFC 8252).
+  - Seeded clients you list. A loopback redirect matches on any port (RFC 8252), but only when its host is written
+    literally as `127.0.0.1`, `[::1]` or `localhost` with no userinfo: `http://loopback:8080/…` is refused, because a
+    browser looks that name up.
   - Client ID Metadata Documents from hosts you allowlist. A document's redirects must stay on its own origin or a
-    loopback address.
+    literal loopback address. The client id must be the document URL written canonically; an alias (`:443`, dot
+    segments, upper case) gets 400.
+  - Documents are cached per process: one stored is not fetched again for 5 minutes, one missing or refused for
+    1 minute, up to 1000 URLs (`MetadataDocumentCacheLifetime`, `MetadataDocumentFailureCacheLifetime`,
+    `MetadataDocumentCacheSize`). Any path on an allowlisted host is trusted.
   - No dynamic client registration.
 - **Consent.**
   - A server-rendered page: no scripts, never framed, `no-store`.
   - Consent counts only as a POSTed `consent=allow` that carries the page's own unlock proof. The unlock is an HMAC
-    over the authorize request, the owner id and an expiry. A crafted link or a cross-site post never grants.
+    (over a length-prefixed encoding) of the authorize request including `scope` and `code_challenge_method`, the
+    owner id, a nonce, an expiry, and a random `__Host-` cookie the page sets, so it works only in the browser that
+    proved the owner. A crafted link or a cross-site post never grants.
+  - An unlock grants once, on every replica: Allow spends its nonce in OpenIddict's token table (a row of type
+    `urn:agentkit:mcp:spent-consent-unlock`, claimed through the unique `ReferenceId` index; no schema change). A
+    double submit or a replay gets the page again.
+- **Optional rate limit on `/oauth/authorize`.** Set `AuthorizeRateLimiter` to any
+  `PartitionedRateLimiter<HttpContext>`. It runs before a metadata document is fetched or the owner is checked, on GET
+  and POST, and a refused request gets 429.
 - **Per-call revocation.**
   - Every `/mcp` call reads the token and its grant from the database.
   - Your store's `ResolveAsync` then reads your connection. Nothing is cached.
@@ -88,7 +102,10 @@ The MCP endpoint is always `/mcp`. The authorization and token endpoints are alw
 - `SignIn(url)`: redirect, for example to your sign-in page, returning to `request.ReturnUrl`.
 
 `McpSecretOwnerCheck` is a ready one: the owner types a shared secret once, compared in constant time and never echoed
-back. Replace it with a check of your owner's session when you have sign-in. Allow still needs the page's unlock, so a
+back. After 10 wrong secrets from one remote address within 15 minutes (`MaxFailedAttempts`, `FailedAttemptWindow`)
+every attempt from it is refused until the window ends, the right secret included. Behind a proxy without a
+forwarded-headers middleware the address is the proxy's, so the limit is global. Use a random secret of 32 or more
+characters: the limit slows guessing, it does not make a short secret safe. Replace it with a check of your owner's session when you have sign-in. Allow still needs the page's unlock, so a
 session cookie alone never grants.
 
 **Revoking.** Revoke your connection first, then call `IMcpOAuthGrants.RevokeAsync(authorizationId)`. That revokes the

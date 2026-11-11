@@ -6,6 +6,7 @@ using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
@@ -20,9 +21,11 @@ namespace AgentKit.McpOAuth.Internal;
 /// (<see cref="IMcpConnectionStore.RenderChoicesAsync"/>) with Allow and Deny.
 ///
 /// <para>Consent counts only as a POSTed <c>consent=allow</c> carrying the unlock this page minted after the owner
-/// check passed: an HMAC over the authorize request, the owner id and an expiry, keyed by a secret every replica
-/// derives from the signing key. A query string never grants, and a cross-site post cannot know the unlock, so a crafted
-/// link or form lands on the page. A failed check gets the page again (400), never a redirect to the client.</para>
+/// check passed: an HMAC over the authorize request (scope and PKCE method included), the owner id, this browser's
+/// consent cookie, a nonce and an expiry, keyed by a secret every replica derives from the signing key. It grants once:
+/// Allow spends its nonce in the database. A query string never grants, and a cross-site post cannot know the unlock,
+/// so a crafted link or form lands on the page. A failed check gets the page again (400), never a redirect to the
+/// client.</para>
 /// </summary>
 internal static class ConsentEndpoint
 {
@@ -65,7 +68,7 @@ internal static class ConsentEndpoint
             request.ClientId!,
             await apps.GetDisplayNameAsync(app, ct) ?? request.ClientId!,
             redirect,
-            McpOAuthClients.IsLoopback(redirect),
+            McpOAuthClients.IsLoopback(request.RedirectUri),
             clients.IsMetadataDocumentId(request.ClientId, out var doc) ? doc : null,
             ReturnUrl(issuer, request),
             clock.GetUtcNow());
@@ -77,31 +80,39 @@ internal static class ConsentEndpoint
 
         var owner = await services.GetRequiredService<IMcpConsentOwner>().CheckAsync(consentRequest, ctx, form, ct);
         var unlockGiven = form?["unlock"].ToString() ?? "";
-        var unlocked = unlockGiven.Length > 0 ? VerifyUnlock(keys.ConsentKey, request, unlockGiven, consentRequest.Now) : null;
+        var browser = ctx.Request.Cookies[BrowserCookie(issuer)];
+        var unlocked = unlockGiven.Length > 0 ? VerifyUnlock(keys.ConsentKey, request, unlockGiven, browser, consentRequest.Now) : null;
+        var expired = browser is null ? "This page needs its cookie: allow cookies for this site, then confirm again." : "This page expired. Confirm again.";
         if (owner is McpOwnerCheck.Redirect signIn) return Results.Redirect(signIn.Url);
 
         // The owner as this request proves them: a session the check recognises now, or a credential proven on an earlier
-        // step of this same authorize request (the unlock). A session that changed owner since then wins over the unlock.
-        var ownerId = owner is McpOwnerCheck.Proven p ? p.OwnerId : unlocked;
+        // step of this same authorize request in this same browser (the unlock). A session that changed owner since then
+        // wins over the unlock.
+        var ownerId = owner is McpOwnerCheck.Proven p ? p.OwnerId : unlocked?.OwnerId;
         if (ownerId is null)
         {
             var credential = (McpOwnerCheck.Credential)owner;
             var error = credential.Error
-                        ?? (unlockGiven.Length > 0 ? "This page expired. Confirm again."
+                        ?? (unlockGiven.Length > 0 ? expired
                             : consent.Length > 0 ? "Confirm that you are the owner first." : null);
             return page.Render(ctx, ConsentPage.CredentialStep(credential.FieldsHtml), error, consent.Length > 0 ? 400 : 200);
         }
 
         var store = services.GetRequiredService<IMcpConnectionStore>();
-        var unlock = MintUnlock(keys.ConsentKey, request, ownerId, consentRequest.Now + options.ConsentLifetime);
+        var unlock = MintUnlock(keys.ConsentKey, request, ownerId, BindBrowser(ctx, issuer, browser), consentRequest.Now + options.ConsentLifetime);
         if (consent != "allow")
             return page.Render(ctx, ConsentPage.ChoicesStep(await store.RenderChoicesAsync(consentRequest, null, ct), unlock), null, 200);
-        if (unlocked != ownerId)
+        if (unlocked is null || unlocked.OwnerId != ownerId)
         {
-            // Allow without this page's own proof (a forged or cross-site post, or the owner changed): show the choices
-            // again, never a grant.
+            // Allow without this page's own proof (a forged or cross-site post, another browser, or the owner changed):
+            // show the choices again, never a grant.
+            return page.Render(ctx, ConsentPage.ChoicesStep(await store.RenderChoicesAsync(consentRequest, form, ct), unlock), expired, 400);
+        }
+        if (!await ConsumeAsync(services, keys.ConsentKey, unlocked, ct))
+        {
+            // The same unlock again: a double submit, a replay, or another replica already granted with it.
             return page.Render(ctx, ConsentPage.ChoicesStep(await store.RenderChoicesAsync(consentRequest, form, ct), unlock),
-                "This page expired. Confirm again.", 400);
+                "This page was already used. Confirm again to make another connection.", 400);
         }
 
         // Allow. The connection id is the grant's subject, so every access token under it names the host's connection.
@@ -157,24 +168,68 @@ internal static class ConsentEndpoint
         QueryHelpers.AddQueryString(issuer.Base + McpOAuthDefaults.AuthorizePath,
             OAuthHidden(request).Select(kv => new KeyValuePair<string, string?>(kv.Key, kv.Value)));
 
-    private static string MintUnlock(byte[] key, OpenIddictRequest request, string ownerId, DateTimeOffset expires)
+    // ---------------------------------------------------------------------------------------------- the unlock
+    //
+    // "2.<expires>.<nonce>.<owner id>.<mac>", the last three base64url. The MAC covers, length-prefixed, the expiry, the
+    // nonce, the owner id, this browser's consent cookie and every authorize parameter the grant depends on. Allow spends
+    // it once: its nonce is claimed in the token table's unique ReferenceId index, so a second use fails on every replica.
+
+    /// <summary>What a valid unlock proves.</summary>
+    private sealed record Unlocked(string OwnerId, string Nonce, DateTimeOffset Expires);
+
+    private const string UnlockVersion = "2";
+
+    /// <summary>The token type of a spent unlock's row. Never a token anyone holds: OpenIddict never reads these rows.</summary>
+    private const string SpentUnlockType = "urn:agentkit:mcp:spent-consent-unlock";
+
+    /// <summary>
+    /// The browser-binding cookie: random, HttpOnly, SameSite=Strict, a session cookie. <c>__Host-</c> (Secure, Path=/)
+    /// on an https issuer; a plain name on an http (development) one, where a browser would drop a Secure cookie.
+    /// </summary>
+    private static string BrowserCookie(McpOAuthIssuer issuer) => issuer.AllowsHttp ? "agentkit-mcp-consent" : "__Host-agentkit-mcp-consent";
+
+    /// <summary>This browser's binding: the cookie it sent when well formed, otherwise a new one set on this response.</summary>
+    private static string BindBrowser(HttpContext ctx, McpOAuthIssuer issuer, string? sent)
     {
-        var at = expires.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-        return at + "." + Base64UrlEncoder.Encode(ownerId) + "." + Base64UrlEncoder.Encode(Mac(key, request, ownerId, at));
+        if (sent is { Length: 43 } && sent.AsSpan().IndexOfAnyExcept(Base64UrlChars) < 0) return sent;
+        var fresh = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32));
+        ctx.Response.Cookies.Append(BrowserCookie(issuer), fresh, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = !issuer.AllowsHttp,
+            SameSite = SameSiteMode.Strict,
+            Path = "/",
+            IsEssential = true,
+        });
+        return fresh;
     }
 
-    /// <summary>The owner id an unlock proves, or null when it is malformed, forged, for another request, or expired.</summary>
-    private static string? VerifyUnlock(byte[] key, OpenIddictRequest request, string unlock, DateTimeOffset now)
+    private static readonly System.Buffers.SearchValues<char> Base64UrlChars =
+        System.Buffers.SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
+
+    private static string MintUnlock(byte[] key, OpenIddictRequest request, string ownerId, string browser, DateTimeOffset expires)
+    {
+        var at = expires.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+        var nonce = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(16));
+        return string.Join('.', UnlockVersion, at, nonce, Base64UrlEncoder.Encode(ownerId),
+            Base64UrlEncoder.Encode(Mac(key, request, at, nonce, ownerId, browser)));
+    }
+
+    /// <summary>What an unlock proves, or null when it is malformed, forged, for another request or browser, or expired.</summary>
+    private static Unlocked? VerifyUnlock(byte[] key, OpenIddictRequest request, string unlock, string? browser, DateTimeOffset now)
     {
         var parts = unlock.Split('.');
-        if (parts.Length != 3 || !long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var expires)
+        if (browser is null || parts.Length != 5 || parts[0] != UnlockVersion
+            || !long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var expires)
             || expires > DateTimeOffset.MaxValue.ToUnixTimeSeconds() || DateTimeOffset.FromUnixTimeSeconds(expires) < now)
             return null;
         try
         {
-            var ownerId = Base64UrlEncoder.Decode(parts[1]);
-            var given = Base64UrlEncoder.DecodeBytes(parts[2]);
-            return CryptographicOperations.FixedTimeEquals(given, Mac(key, request, ownerId, parts[0])) ? ownerId : null;
+            var ownerId = Base64UrlEncoder.Decode(parts[3]);
+            var given = Base64UrlEncoder.DecodeBytes(parts[4]);
+            return CryptographicOperations.FixedTimeEquals(given, Mac(key, request, parts[1], parts[2], ownerId, browser))
+                ? new Unlocked(ownerId, parts[2], DateTimeOffset.FromUnixTimeSeconds(expires))
+                : null;
         }
         catch (Exception e) when (e is FormatException or ArgumentException)
         {
@@ -182,10 +237,50 @@ internal static class ConsentEndpoint
         }
     }
 
-    private static byte[] Mac(byte[] key, OpenIddictRequest request, string ownerId, string expires)
+    /// <summary>
+    /// The MAC over an unambiguous encoding: each field as a 4-byte big-endian length (−1 for absent) and its UTF-8
+    /// bytes, so no attacker-chosen value (<c>state</c>, say) can shift a boundary.
+    /// </summary>
+    private static byte[] Mac(byte[] key, OpenIddictRequest request, string expires, string nonce, string ownerId, string browser)
     {
-        var message = string.Join('\n', "agentkit-mcp-consent", expires, ownerId, request.ClientId, request.RedirectUri,
-            request.CodeChallenge, request.State, string.Join(' ', request.GetResources()));
-        return HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(message));
+        var resources = request.GetResources().ToList();
+        string?[] fields =
+        [
+            "agentkit-mcp-consent-v2", expires, nonce, ownerId, browser,
+            request.ClientId, request.RedirectUri, request.ResponseType, request.Scope, request.State,
+            request.CodeChallenge, request.CodeChallengeMethod, resources.Count.ToString(CultureInfo.InvariantCulture),
+            .. resources,
+        ];
+        using var buffer = new MemoryStream();
+        Span<byte> length = stackalloc byte[4];
+        foreach (var field in fields)
+        {
+            var bytes = field is null ? null : Encoding.UTF8.GetBytes(field);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(length, bytes?.Length ?? -1);
+            buffer.Write(length);
+            if (bytes is not null) buffer.Write(bytes);
+        }
+        return HMACSHA256.HashData(key, buffer.ToArray());
+    }
+
+    /// <summary>
+    /// Spends an unlock: true the first time on any replica, false ever after. A row in OpenIddict's token table keyed by
+    /// a value derived from the nonce (never the nonce itself, so nothing a client holds finds it), claimed through the
+    /// unique ReferenceId index: no schema change, and atomic under concurrent submits.
+    /// </summary>
+    private static async Task<bool> ConsumeAsync(IServiceProvider services, byte[] key, Unlocked unlocked, CancellationToken ct)
+    {
+        var referenceId = "agentkit-consent:" + Base64UrlEncoder.Encode(
+            HMACSHA256.HashData(key, Encoding.UTF8.GetBytes("agentkit-mcp-consent-spent\n" + unlocked.Nonce)));
+        var db = services.GetRequiredService<McpOAuthDbContext>();
+        var now = services.GetRequiredService<TimeProvider>().GetUtcNow();
+        var id = Guid.CreateVersion7().ToString();
+        var claimed = await db.Database.ExecuteSqlAsync(
+            $"""
+            INSERT INTO "OpenIddictTokens" ("Id", "ReferenceId", "Type", "Status", "CreationDate", "ExpirationDate", "RedemptionDate")
+            VALUES ({id}, {referenceId}, {SpentUnlockType}, {OpenIddictConstants.Statuses.Redeemed}, {now}, {unlocked.Expires}, {now})
+            ON CONFLICT ("ReferenceId") DO NOTHING
+            """, ct);
+        return claimed == 1;
     }
 }

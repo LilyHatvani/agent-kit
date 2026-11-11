@@ -129,10 +129,12 @@ public sealed class TokenTests(OAuthApp app)
     {
         await using var replica = await app.StartHostAsync(OAuthApp.PublicUrl);
         using var first = app.Host.Browser();
-        using var second = replica.Browser();
         var pkce = Pkce.New();
         var hidden = Hidden(await (await first.GetAsync(AuthorizeUrl("claude-ai", ClaudeAiCallback, pkce.Challenge, "r1"))).Content.ReadAsStringAsync());
         var unlockedHtml = await (await Post(first, hidden, new() { ["password"] = app.OwnerSecret, ["consent"] = "continue" })).Content.ReadAsStringAsync();
+
+        // The same browser, its next request routed to the replica.
+        using var second = replica.Browser(await CookiesOf(first));
 
         var approved = await AllowAsync(second, unlockedHtml, ClaudeAiCallback, "r1", new() { ["label"] = NewLabel() });
         Assert.NotEmpty(approved.Code);
