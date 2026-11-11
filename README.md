@@ -62,6 +62,7 @@ HTTP.
 
 - **Versions.** Nobody bumps versions by hand. CI builds `0.1.<run number>`, and a local build is `0.1.0-dev`.
 - **CI.** Every push and pull request builds, tests against PostgreSQL 18 and packs.
-- **Publishing.** A push to `develop` publishes to nuget.org when the repository has a `NUGET_API_KEY` secret. Without
-  it, the job says so and skips; the packages stay attached to the run.
+- **Publishing.** A push to `develop` publishes to nuget.org through Trusted Publishing: no API key is stored; nuget.org
+  trusts this repository's `ci.yml` through GitHub's OIDC token. It runs when the repository variable `NUGET_USER`
+  (the nuget.org profile name) is set; otherwise the publish job is skipped and the packages stay attached to the run.
 - **Changes.** [CHANGELOG.md](CHANGELOG.md) lists them per package.

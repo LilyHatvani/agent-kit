@@ -53,24 +53,27 @@ jobs:
   publish:
     name: publish to nuget.org
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    # Trusted Publishing, no stored API key (owner, 2026-11-11): nuget.org trusts this workflow through GitHub's OIDC
+    # token, under the owner's nuget.org policy (repository owner LilyHatvani, repository agent-kit, workflow ci.yml).
+    # The repository variable NUGET_USER (the nuget.org profile name) switches it on; unset, this job is skipped.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && vars.NUGET_USER != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      # A secret cannot gate a job's `if`; mapped to env, an absent secret is an empty string the step can test.
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: packages
           path: artifacts
-      - name: No NUGET_API_KEY secret yet
-        if: env.NUGET_API_KEY == ''
-        run: echo "::notice::NUGET_API_KEY is not set on this repository, so nothing is published. The packages are attached to this run."
       - uses: actions/setup-dotnet@v4
-        if: env.NUGET_API_KEY != ''
         with:
           dotnet-version: 10.0.x
+      - name: Exchange the OIDC token for a short-lived nuget.org key
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER }}
       - name: Push packages
-        if: env.NUGET_API_KEY != ''
-        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
