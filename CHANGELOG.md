@@ -2,6 +2,15 @@
 
 Per package, newest first. Versions are `0.1.<CI run number>`; an entry names the first version that carries it.
 
+## AgentKit.Channels
+
+### Unreleased
+
+- **First release**, for Agent Blog's notifications: Discord and Slack webhooks, ntfy and Standard Webhooks signed
+  webhooks (sign pinned to the spec's reference vector, verify for receivers). Each builder escapes agent-written text
+  for its destination; `SendOutcome` reads an answer as sent, retry (with `Retry-After`), gone or failed; `Retries` is
+  1 m, 5 m, 30 m, 2 h, 12 h.
+
 ## AgentKit.Secrets
 
 ### Unreleased
