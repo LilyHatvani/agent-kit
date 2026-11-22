@@ -42,6 +42,20 @@ public sealed class RobustnessTests : IDisposable
         Assert.True(result.Failure.RetryAfter is null || result.Failure.RetryAfter <= TimeSpan.FromDays(1));
     }
 
+    /// <summary>A Retry-After that isn't seconds or a date is no header: the network's own reset header still decides.</summary>
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("1e3")]
+    [InlineData("-0.5")]
+    public async Task A_malformed_retry_after_never_overrides_the_reset_header(string value)
+    {
+        var reset = TestHost.Start.AddMinutes(10).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests, new { title = "Too Many Requests" },
+            ("Retry-After", value), ("x-rate-limit-reset", reset));
+        var result = await X().PostAsync(Post());
+        Assert.Equal(TimeSpan.FromMinutes(10), result.Failure!.RetryAfter);
+    }
+
     /// <summary>A status read by AgentKit.Channels' one reading: 408 and 425 are worth sending again; a 404 off Discord is still a refusal.</summary>
     [Theory]
     [InlineData(408, SocialFailureKind.Transient)]

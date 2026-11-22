@@ -281,12 +281,13 @@ internal abstract class ChannelBase : ISocialChannel
         return null;
     }
 
-    private static TimeSpan Positive(TimeSpan t) => t < TimeSpan.Zero ? TimeSpan.Zero : t > MaxWait ? MaxWait : t;
+    /// <summary>A wait kept between none and a day (AgentKit.Channels' <see cref="SendOutcome.Bounded(TimeSpan, TimeSpan)"/>).</summary>
+    private static TimeSpan Positive(TimeSpan t) => SendOutcome.Bounded(t, MaxWait);
 
     /// <summary>A wait in seconds, kept between none and a day: a header saying more (or nonsense) is not believed.</summary>
-    private static TimeSpan? Wait(double seconds) =>
-        !double.IsFinite(seconds) ? null : seconds <= 0 ? TimeSpan.Zero : seconds >= MaxWait.TotalSeconds ? MaxWait : TimeSpan.FromSeconds(seconds);
+    protected static TimeSpan? Wait(double seconds) => SendOutcome.Bounded(seconds, MaxWait);
 
+    /// <summary>The longest wait a refusal is believed to ask for (the README's "at most a day").</summary>
     private static readonly TimeSpan MaxWait = TimeSpan.FromDays(1);
 
     private static string? Header(HttpResponseMessage response, string name) =>
@@ -302,7 +303,8 @@ internal abstract class ChannelBase : ISocialChannel
         var s = string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
         foreach (var secret in _secrets)
             s = s.Replace(secret, "***", StringComparison.Ordinal);
-        return s.Length > MaxMessage ? s[..(MaxMessage - 1)] + "…" : s;
+        // AgentKit.Channels' cut: never inside a surrogate pair or an emoji.
+        return Text.Truncate(s, MaxMessage);
     }
 
     /// <summary>Reads a JSON body, or null when it isn't JSON.</summary>

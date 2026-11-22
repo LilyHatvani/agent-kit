@@ -290,6 +290,9 @@ public sealed class DiscordTests : IDisposable
     [Theory]
     [InlineData("NaN")]
     [InlineData("1e400")]
+    [InlineData("1e300")]
+    [InlineData("-5")]
+    [InlineData("+30")]
     public async Task A_429_whose_retry_after_is_nonsense_takes_the_wait_from_the_body(string value)
     {
         _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
@@ -297,6 +300,45 @@ public sealed class DiscordTests : IDisposable
         var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
         Assert.Equal(SocialFailureKind.RateLimited, limited.Failure!.Kind);
         Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure.RetryAfter);
+    }
+
+    /// <summary>Retry-After is the standard header, so a well-formed one goes before Discord's own reset header and the body.</summary>
+    [Fact]
+    public async Task A_well_formed_retry_after_goes_first()
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
+            new { message = "You are being rate limited.", retry_after = 30.0, global = false }, ("Retry-After", "1.5"), ("X-RateLimit-Reset-After", "30"));
+        var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure!.RetryAfter);
+    }
+
+    [Fact]
+    public async Task A_card_title_cut_drops_the_space_before_the_ellipsis()
+    {
+        var post = Post() with { Card = new LinkCard { Title = new string('a', 254) + " bb" } };
+        await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(post);
+        Assert.Equal(new string('a', 254) + "…", _host.Network.Seen[0].Json.GetProperty("embeds")[0].GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task A_full_width_host_is_discord_com_and_the_post_goes_there()
+    {
+        // IDN maps ｄ (U+FF44) to d, so the host is discord.com itself; whatever was typed, the request goes to the canonical address.
+        var hook = new DiscordWebhook(new Uri($"https://ｄiscord.com/api/webhooks/1234567890/{WebhookToken}"));
+        var result = await _host.Channels.Discord(hook).PostAsync(Post());
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal("discord.com", _host.Network.Seen[0].Uri.Host);
+    }
+
+    [Fact]
+    public async Task A_long_refusal_is_cut_without_splitting_an_emoji()
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.BadRequest, new { message = new string('a', 270) + "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", code = 0 });
+        var result = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        var message = result.Failure!.Message;
+        Assert.InRange(message.Length, 1, 300);
+        Assert.EndsWith("…", message, StringComparison.Ordinal);
+        Assert.False(char.IsHighSurrogate(message[^2]));
     }
 
     [Fact]

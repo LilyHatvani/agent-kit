@@ -178,8 +178,8 @@ internal sealed class TelegramChannel : ChannelBase
         var failure = FromStatus(response, description);
         if (root is { } e && Prop(e, "parameters") is { } p)
         {
-            if (failure.Kind == SocialFailureKind.RateLimited && failure.RetryAfter is null && Number(p, "retry_after") is { } seconds and >= 0 and < 86_400)
-                return failure with { RetryAfter = TimeSpan.FromSeconds(seconds) };
+            if (failure.Kind == SocialFailureKind.RateLimited && failure.RetryAfter is null && Number(p, "retry_after") is { } seconds and >= 0)
+                return failure with { RetryAfter = Wait(seconds) };
             if (Number(p, "migrate_to_chat_id") is { } moved)
                 return new SocialFailure(SocialFailureKind.Auth,
                     Clean(Invariant($"The group became a supergroup with the id {moved:0}: set the chat to it.")));

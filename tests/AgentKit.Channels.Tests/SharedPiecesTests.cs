@@ -77,10 +77,12 @@ public sealed class SharedPiecesTests
     [Theory]
     [InlineData("NaN", null)]
     [InlineData("Infinity", null)]
-    [InlineData("1e400", null)]       // parses as infinity
+    [InlineData("1e400", null)]
     [InlineData("soon", null)]
-    [InlineData("1e300", 43_200.0)]   // capped, never handed to TimeSpan.FromSeconds
-    [InlineData("-5", 0.0)]
+    [InlineData("1e300", null)]       // an exponent isn't seconds
+    [InlineData("-5", null)]          // nor is a sign
+    [InlineData("+30", null)]
+    [InlineData("99999999999999999999999", 43_200.0)]   // capped, never handed to TimeSpan.FromSeconds
     [InlineData("1.5", 1.5)]
     [InlineData("120", 120.0)]
     public void Retry_after_is_read_finite_and_capped(string value, double? seconds)
@@ -112,6 +114,22 @@ public sealed class SharedPiecesTests
         Assert.Equal(SendResult.Retry, outcome.Result);
         Assert.InRange(outcome.RetryAfter!.Value, TimeSpan.Zero, SendOutcome.MaxRetryAfter);
     }
+
+    [Fact]
+    public void A_wait_is_bounded_on_both_sides()
+    {
+        Assert.Equal(TimeSpan.Zero, SendOutcome.Bounded(TimeSpan.FromSeconds(-1), TimeSpan.FromHours(1)));
+        Assert.Equal(TimeSpan.FromHours(1), SendOutcome.Bounded(TimeSpan.FromDays(3), TimeSpan.FromHours(1)));
+        Assert.Null(SendOutcome.Bounded(double.NaN, TimeSpan.FromHours(1)));
+        Assert.Equal(TimeSpan.FromHours(1), SendOutcome.Bounded(1e300, TimeSpan.FromHours(1)));
+        Assert.Equal(TimeSpan.Zero, SendOutcome.Bounded(-3, TimeSpan.FromHours(1)));
+    }
+
+    [Theory]
+    [InlineData("https://hooks.slack.com/services/T0/B0/xyz?x=1")]
+    [InlineData("https://hooks.slack.com/services/T0/B0/xyz#frag")]
+    public void A_slack_webhook_has_no_query_or_fragment(string url) =>
+        Assert.NotNull(Slack.WebhookRefusal(new Uri(url)));
 
     [Fact]
     public void A_cut_falls_between_the_characters_people_see()

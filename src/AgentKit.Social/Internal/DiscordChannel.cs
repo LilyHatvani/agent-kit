@@ -25,7 +25,8 @@ namespace AgentKit.Social.Internal;
 /// </summary>
 internal sealed class DiscordChannel : ChannelBase
 {
-    private const string ApiBase = "https://discord.com/api/v10";
+    /// <summary>Discord's versioned API, the one AgentKit.Channels' <see cref="DiscordWebhookAddress"/> points webhooks at.</summary>
+    private static readonly string ApiBase = DiscordWebhookAddress.Api.AbsoluteUri.TrimEnd('/');
     private const int MaxContent = Discord.MaxContent;
     private const int MaxTitle = Discord.MaxTitle;
     private const int MaxDescription = Discord.MaxBody;
@@ -254,8 +255,8 @@ internal sealed class DiscordChannel : ChannelBase
         if (SendOutcome.Classify((int)response.StatusCode) == SendResult.Gone)
             return failure with { Kind = SocialFailureKind.Auth };
         if (failure.Kind == SocialFailureKind.RateLimited && failure.RetryAfter is null && doc is not null
-            && Number(doc.RootElement, "retry_after") is { } seconds and >= 0 and < 86_400)
-            return failure with { RetryAfter = TimeSpan.FromSeconds(seconds) };
+            && Number(doc.RootElement, "retry_after") is { } seconds and >= 0)
+            return failure with { RetryAfter = Wait(seconds) };
         return failure;
     }
 }

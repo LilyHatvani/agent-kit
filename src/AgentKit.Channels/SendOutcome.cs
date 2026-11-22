@@ -64,10 +64,10 @@ public sealed record SendOutcome(SendResult Result, int? Status, TimeSpan? Retry
     };
 
     /// <summary>
-    /// How long <paramref name="response"/>'s <c>Retry-After</c> asks to wait: seconds (whole, or with a fraction as some
-    /// servers write them) or an HTTP date, measured from <paramref name="now"/>. A wait in the past is none; one over
-    /// <paramref name="max"/> (default <see cref="MaxRetryAfter"/>) is <paramref name="max"/>; a value that isn't a finite
-    /// number or a date (<c>NaN</c>, <c>1e400</c>, words) is no header. Null when there is none.
+    /// How long <paramref name="response"/>'s <c>Retry-After</c> asks to wait: whole seconds or an HTTP date (RFC 9110),
+    /// or seconds with a fraction as some servers write them, measured from <paramref name="now"/> and kept within
+    /// <paramref name="max"/> (default <see cref="MaxRetryAfter"/>) by <c>Bounded</c>. Anything else (a sign, an exponent,
+    /// <c>NaN</c>, words) is no header, so a caller's other sources of a wait still count. Null when there is none.
     /// </summary>
     public static TimeSpan? RetryAfterOf(HttpResponseMessage response, DateTimeOffset now, TimeSpan? max = null)
     {
@@ -75,17 +75,24 @@ public sealed record SendOutcome(SendResult Result, int? Status, TimeSpan? Retry
         var cap = max ?? MaxRetryAfter;
         ArgumentOutOfRangeException.ThrowIfLessThan(cap, TimeSpan.Zero, nameof(max));
         var h = response.Headers.RetryAfter;
-        if (h?.Delta is { } delta) return Clamp(delta, cap);
-        if (h?.Date is { } date) return Clamp(date - now, cap);
-        if (!response.Headers.TryGetValues("Retry-After", out var raw)
-            || !double.TryParse(raw.FirstOrDefault(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
-            || !double.IsFinite(seconds))
-            return null;
-        // Compared as seconds before a TimeSpan is made: TimeSpan.FromSeconds throws on a value past its range.
-        return seconds <= 0 ? TimeSpan.Zero : seconds >= cap.TotalSeconds ? cap : TimeSpan.FromSeconds(seconds);
+        if (h?.Delta is { } delta) return Bounded(delta, cap);
+        if (h?.Date is { } date) return Bounded(date - now, cap);
+        // Digits and one decimal point only: no sign, no exponent, no NaN or Infinity.
+        return response.Headers.TryGetValues("Retry-After", out var raw)
+            && double.TryParse(raw.FirstOrDefault(), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var seconds)
+            ? Bounded(seconds, cap)
+            : null;
     }
 
-    private static TimeSpan Clamp(TimeSpan wait, TimeSpan cap) => wait < TimeSpan.Zero ? TimeSpan.Zero : wait > cap ? cap : wait;
+    /// <summary>A wait kept between none and <paramref name="max"/>.</summary>
+    public static TimeSpan Bounded(TimeSpan wait, TimeSpan max) => wait < TimeSpan.Zero ? TimeSpan.Zero : wait > max ? max : wait;
+
+    /// <summary>
+    /// A wait given in seconds, kept between none and <paramref name="max"/>; null when it isn't a finite number. Compared
+    /// as seconds before a <see cref="TimeSpan"/> is made, because <see cref="TimeSpan.FromSeconds(double)"/> throws past its range.
+    /// </summary>
+    public static TimeSpan? Bounded(double seconds, TimeSpan max) =>
+        !double.IsFinite(seconds) ? null : seconds <= 0 ? TimeSpan.Zero : seconds >= max.TotalSeconds ? max : TimeSpan.FromSeconds(seconds);
 
     private static async Task<string> HeadAsync(HttpResponseMessage response, CancellationToken ct)
     {
