@@ -11,13 +11,13 @@ namespace AgentKit.Social.Internal;
 /// <summary>
 /// Bluesky over the AT Protocol's HTTP API (XRPC), with an app password.
 /// <list type="bullet">
-/// <item>Session: <c>com.atproto.server.createSession</c> (https://docs.bsky.app/docs/api/com-atproto-server-create-session),
+/// <item>Session: <c>com.atproto.server.createSession</c> (https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/server/createSession.json),
 /// kept in memory per account and made again on <c>ExpiredToken</c>.</item>
 /// <item>Post: <c>com.atproto.repo.createRecord</c> of an <c>app.bsky.feed.post</c> with an rkey chosen before sending
-/// (https://docs.bsky.app/docs/api/com-atproto-repo-create-record), text at most 300 graphemes and 3000 UTF-8 bytes,
-/// link and tag facets indexed in UTF-8 bytes (https://docs.bsky.app/docs/advanced-guides/post-richtext).</item>
+/// (https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/repo/createRecord.json), text at most 300 graphemes and 3000 UTF-8 bytes,
+/// link and tag facets indexed in UTF-8 bytes (https://github.com/bluesky-social/atproto/blob/main/packages/pds/lexicons/app/bsky/richtext/facet.json).</item>
 /// <item>Card: an <c>app.bsky.embed.external</c> whose thumb is a blob from <c>com.atproto.repo.uploadBlob</c>, at most
-/// 1,000,000 bytes (https://docs.bsky.app/docs/advanced-guides/posts#website-card-embeds).</item>
+/// 1,000,000 bytes (https://github.com/bluesky-social/atproto/blob/main/packages/pds/lexicons/app/bsky/embed/external.json and https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/repo/uploadBlob.json).</item>
 /// <item>Retry: <c>com.atproto.repo.getRecord</c> on the attempt's rkey before sending again.</item>
 /// </list>
 /// </summary>
@@ -54,7 +54,7 @@ internal sealed class BlueskyChannel : ChannelBase
         ArgumentNullException.ThrowIfNull(post);
         var tags = TextRules.NormalizeTags(post.Tags);
         var text = TextRules.Assemble(post.Text, post.Link, post.Link is null ? null : TextRules.ShortLink(post.Link), tags);
-        var problems = new List<string>();
+        var problems = new List<string>(CardProblems(post));
         var length = TextRules.Graphemes(text);
         if (length > MaxGraphemes) problems.Add($"The post is {length} characters and Bluesky takes {MaxGraphemes}.");
         var bytes = Encoding.UTF8.GetByteCount(text);
@@ -225,7 +225,11 @@ internal sealed class BlueskyChannel : ChannelBase
 
     private async Task<(BlueskySession? Session, SocialFailure? Failure)> SessionAsync(CancellationToken ct)
     {
-        if (Context.Sessions.Get(_sessionKey) is { } cached) return (cached, null);
+        if (Context.Sessions.Get(_sessionKey) is { } cached)
+        {
+            AddSecret(cached.AccessJwt);
+            return (cached, null);
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, Xrpc("com.atproto.server.createSession"))
         {
             Content = JsonContent.Create(new JsonObject { ["identifier"] = _account.Identifier, ["password"] = _account.AppPassword }),
@@ -247,6 +251,8 @@ internal sealed class BlueskyChannel : ChannelBase
         }
         if (doc is null || Str(doc.RootElement, "accessJwt") is not { } access || Str(doc.RootElement, "did") is not { } did)
             return (null, new SocialFailure(SocialFailureKind.Transient, "Bluesky's sign-in answer had no session."));
+        AddSecret(access);
+        AddSecret(Str(doc.RootElement, "refreshJwt"));
         var session = new BlueskySession(access, did, Str(doc.RootElement, "handle") ?? did);
         Context.Sessions.Set(_sessionKey, session);
         return (session, null);

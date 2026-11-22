@@ -6,11 +6,11 @@ namespace AgentKit.Social.Tests;
 
 /// <summary>
 /// Bluesky as its docs describe it:
-/// createSession https://docs.bsky.app/docs/api/com-atproto-server-create-session,
-/// createRecord https://docs.bsky.app/docs/api/com-atproto-repo-create-record,
-/// getRecord https://docs.bsky.app/docs/api/com-atproto-repo-get-record,
-/// uploadBlob and the external card https://docs.bsky.app/docs/advanced-guides/posts,
-/// facets (UTF-8 byte offsets) https://docs.bsky.app/docs/advanced-guides/post-richtext and the lexicon
+/// createSession https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/server/createSession.json,
+/// createRecord https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/repo/createRecord.json,
+/// getRecord https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/repo/getRecord.json,
+/// uploadBlob and the external card https://github.com/bluesky-social/atproto/blob/main/packages/pds/lexicons/app/bsky/embed/external.json, https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/repo/uploadBlob.json,
+/// facets (UTF-8 byte offsets) https://github.com/bluesky-social/atproto/blob/main/packages/pds/lexicons/app/bsky/richtext/facet.json and the lexicon
 /// app.bsky.richtext.facet, text limits in the lexicon app.bsky.feed.post (maxGraphemes 300, maxLength 3000).
 /// </summary>
 public sealed class BlueskyTests : IDisposable
@@ -301,6 +301,27 @@ public sealed class BlueskyTests : IDisposable
         var down = await Channel().PostAsync(Post() with { Card = null });
         Assert.Equal(SocialFailureKind.Transient, down.Failure!.Kind);
         Assert.True(down.Failure.MayHavePosted);
+    }
+
+    [Fact]
+    public async Task Session_tokens_are_scrubbed_like_the_app_password_even_from_a_reused_session()
+    {
+        // Signing in works; the PDS then echoes the request's bearer token in its error.
+        _host.Network.Respond = r => r.Uri.AbsolutePath.EndsWith("createSession", StringComparison.Ordinal)
+            ? Bluesky(r)
+            : FakeNetwork.Json(HttpStatusCode.BadRequest, new { error = "InvalidRequest", message = $"bad call with {r.Header("Authorization")}" });
+        var first = await Channel().PostAsync(Post() with { Card = null });
+        var reused = await Channel().PostAsync(Post(key: "again") with { Card = null });   // a new channel, the cached session
+
+        Assert.Equal(1, _sessions);
+        foreach (var result in new[] { first, reused })
+        {
+            Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+            Assert.Contains("bad call with Bearer ***", result.Failure.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("access-1", result.Failure.Message, StringComparison.Ordinal);
+        }
+        Assert.Contains(_host.Logs.Lines, l => l.Contains("bad call", StringComparison.Ordinal));
+        Assert.All(_host.Logs.Lines, l => Assert.DoesNotContain("access-1", l, StringComparison.Ordinal));
     }
 
     [Fact]

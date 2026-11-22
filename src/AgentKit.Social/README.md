@@ -65,8 +65,8 @@ opened) marks the attempt `Failed`, so the next call starts afresh.
 ## Per network
 
 **Bluesky** (AT Protocol over HTTP, an app password).
-- Session from `com.atproto.server.createSession`, kept in memory per account (createSession is rate-limited: 30 per 5
-  minutes per account) and made again on `ExpiredToken`. `Service` defaults to `https://bsky.social`, which serves every
+- Session from `com.atproto.server.createSession`, kept in memory per account (createSession is rate-limited per account,
+  more tightly than posting) and made again on `ExpiredToken`. `Service` defaults to `https://bsky.social`, which serves every
   Bluesky-hosted account; a self-hosted PDS sets its own.
 - 300 graphemes and 3000 UTF-8 bytes. The link is shown short in the text (no scheme, at most 30 characters, as the
   Bluesky app writes it) under a link facet with the full URL; every URL and hashtag in the text gets its facet, indexed
@@ -96,14 +96,19 @@ opened) marks the attempt `Failed`, so the next call starts afresh.
 - The message address needs the server id, read once from the webhook or the channel.
 
 **X** (API v2, an OAuth 2.0 user access token with `tweet.read tweet.write users.read`).
-- **Opt-in and paid.** X's API has no free posting tier worth building on: posting is billed (pay-per-use credits or a
-  subscription, as X's developer console offers today). Leave the channel off until the owner adds a key.
+- **Opt-in and paid.** X's API is pay-per-use credits bought upfront, with no free posting tier
+  ([pricing](https://docs.x.com/x-api/getting-started/pricing), read 2026-11-22: "Post: Create" $0.015, "Post: Create
+  (with URL)" $0.200 per request). Every post this package sends carries a link, so each costs the URL price. Leave the
+  channel off until the owner adds a key and credits.
 - 280 weighted characters (twitter-text v3: most Latin text weighs 1, CJK and emoji 2, every URL 23, after NFC).
-  `MaxWeightedLength` raises it for an X Premium account.
+  Only `http(s)://` URLs are counted as links; twitter-text also counts a bare domain (`example.com`) as 23, so a text
+  with bare domains counts a little differently. `MaxWeightedLength` raises the limit for an X Premium account.
 - X builds the card from the page; no media is uploaded.
-- Access tokens last two hours. `SocialChannels.RefreshXTokenAsync(client, refreshToken)` trades a refresh token
-  (`offline.access`) for a new pair. X rotates the refresh token on every use: store the new one first. An `Auth`
-  failure there means the owner connects X again.
+- An access token from the PKCE flow lasts two hours. `SocialChannels.RefreshXTokenAsync(client, refreshToken)` trades
+  a refresh token (`offline.access`) for a new access token. Store the refresh token the answer carries before using
+  the access token: the one sent may be spent. An `Auth` failure there means the owner connects X again.
+- `Id` is `x` and Mastodon's is the instance host: they don't tell two accounts on the same network apart, so keep the
+  host's channel id in the idempotency key (`…:channel:<id>`).
 
 ## Credentials and egress
 

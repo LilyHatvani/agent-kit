@@ -13,13 +13,25 @@ namespace AgentKit.Social.Internal;
 internal abstract class ChannelBase : ISocialChannel
 {
     private const int MaxMessage = 300;
-    private readonly string[] _secrets;
+    private readonly Lock _secretsGate = new();
+    private string[] _secrets;
 
     protected ChannelBase(SocialChannelContext context, IEnumerable<string?> secrets)
     {
         Context = context;
         Log = context.Logs.CreateLogger("AgentKit.Social." + GetType().Name.Replace("Channel", "", StringComparison.Ordinal));
-        _secrets = [.. secrets.Where(s => !string.IsNullOrEmpty(s) && s.Length >= 4).Select(s => s!).OrderByDescending(s => s.Length)];
+        _secrets = Ordered(secrets);
+    }
+
+    /// <summary>Longest first, so a secret that contains another is scrubbed whole.</summary>
+    private static string[] Ordered(IEnumerable<string?> secrets) =>
+        [.. secrets.Where(s => !string.IsNullOrEmpty(s) && s.Length >= 4).Select(s => s!).Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length)];
+
+    /// <summary>Adds a credential learned while working (a session token) to what is scrubbed from messages.</summary>
+    protected void AddSecret(string? secret)
+    {
+        if (string.IsNullOrEmpty(secret) || _secrets.Contains(secret, StringComparer.Ordinal)) return;
+        lock (_secretsGate) _secrets = Ordered([.. _secrets, secret]);
     }
 
     protected SocialChannelContext Context { get; }
@@ -73,6 +85,17 @@ internal abstract class ChannelBase : ISocialChannel
         else if (!result.Posted && Log.IsEnabled(LogLevel.Warning))
             Log.LogWarning("Post to {Channel} failed ({Kind}): {Message}", Id, result.Failure!.Kind, result.Failure.Message);
         return result;
+    }
+
+    /// <summary>What every network refuses in a card: a card without the link it previews, a picture type that isn't an image type.</summary>
+    protected static IEnumerable<string> CardProblems(SocialPost post)
+    {
+        ArgumentNullException.ThrowIfNull(post);
+        if (post.Card is null) yield break;
+        if (post.Link is null) yield return "A card needs the link it previews.";
+        if (post.Card.ImageContentType is { } type
+            && (!MediaTypeHeaderValue.TryParse(type, out var parsed) || parsed.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true))
+            yield return "The card picture's media type must be an image type, such as image/png.";
     }
 
     /// <summary>Sends a post that fits. Expected failures come back as results; transport ones may throw for the caller to map.</summary>
@@ -129,7 +152,7 @@ internal abstract class ChannelBase : ISocialChannel
 
     /// <summary>
     /// How long a 429 asks to wait: <c>Retry-After</c> (seconds or a date), then the network's reset headers
-    /// (<c>ratelimit-reset</c> and <c>x-rate-limit-reset</c> in Unix seconds, <c>X-RateLimit-Reset</c> as an ISO 8601 date,
+    /// (<c>ratelimit-reset</c> and <c>x-rate-limit-reset</c> in Unix seconds, <c>X-RateLimit-Reset</c> as Unix seconds or an ISO 8601 date,
     /// <c>X-RateLimit-Reset-After</c> in seconds).
     /// </summary>
     protected TimeSpan? RetryAfter(HttpResponseMessage response)
@@ -147,8 +170,8 @@ internal abstract class ChannelBase : ISocialChannel
         foreach (var name in new[] { "ratelimit-reset", "x-rate-limit-reset", "X-RateLimit-Reset" })
         {
             if (Header(response, name) is not { } value) continue;
-            if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var epoch))
-                return Positive(DateTimeOffset.FromUnixTimeSeconds(epoch) - now);
+            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch) && epoch > 1_000_000_000)
+                return Positive(DateTimeOffset.FromUnixTimeMilliseconds((long)(epoch * 1000)) - now);
             if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at))
                 return Positive(at - now);
         }

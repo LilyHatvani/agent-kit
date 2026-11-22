@@ -43,7 +43,7 @@ internal sealed class XChannel : ChannelBase
         ArgumentNullException.ThrowIfNull(post);
         var text = TextRules.Assemble(post.Text, post.Link, post.Link?.AbsoluteUri, TextRules.NormalizeTags(post.Tags));
         var length = TextRules.XWeightedLength(text);
-        var problems = new List<string>();
+        var problems = new List<string>(CardProblems(post));
         if (length > _account.MaxWeightedLength) problems.Add($"The post weighs {length} characters and X takes {_account.MaxWeightedLength}.");
         if (text.Length == 0) problems.Add("The post is empty.");
         return new SocialComposition(text, length, _account.MaxWeightedLength, "weighted characters", problems);

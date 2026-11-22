@@ -4,12 +4,12 @@ namespace AgentKit.Social.Tests;
 
 /// <summary>
 /// Discord as its docs describe it: Execute Webhook with ?wait=true returning the message
-/// (https://discord.com/developers/docs/resources/webhook#execute-webhook), Get Webhook with Token for guild_id,
+/// (https://docs.discord.com/developers/resources/webhook), Get Webhook with Token for guild_id,
 /// Create Message with nonce (≤ 25 characters) and enforce_nonce, Crosspost Message
-/// (https://discord.com/developers/docs/resources/message), content ≤ 2000 and embed limits, allowed_mentions,
+/// (https://docs.discord.com/developers/resources/message), content ≤ 2000 and embed limits, allowed_mentions,
 /// multipart uploads with payload_json and files[n] referenced as attachment://
-/// (https://discord.com/developers/docs/reference#uploading-files), 429 bodies with retry_after
-/// (https://discord.com/developers/docs/topics/rate-limits).
+/// (https://docs.discord.com/developers/reference), 429 bodies with retry_after
+/// (https://docs.discord.com/developers/topics/rate-limits).
 /// </summary>
 public sealed class DiscordTests : IDisposable
 {

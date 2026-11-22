@@ -28,6 +28,8 @@ public interface ISocialChannel
     /// <summary>
     /// A stable name for this account that holds no secret: <c>bluesky:&lt;identifier&gt;</c>,
     /// <c>mastodon:&lt;instance host&gt;</c>, <c>discord-webhook:&lt;webhook id&gt;</c>, <c>discord:&lt;channel id&gt;</c>, <c>x</c>.
+    /// Mastodon's and X's don't tell two accounts on the same instance or network apart, so the host's channel id
+    /// belongs in <see cref="SocialPost.IdempotencyKey"/>.
     /// </summary>
     string Id { get; }
 

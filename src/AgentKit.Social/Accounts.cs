@@ -126,7 +126,7 @@ public sealed class XClient(string clientId, string? clientSecret = null)
     public override string ToString() => $"X client {ClientId}" + (ClientSecret is null ? "" : " (secret hidden)");
 }
 
-/// <summary>A refreshed X token pair. X rotates the refresh token on every use: store the new one, the old one is spent.</summary>
+/// <summary>A refreshed X token pair. The answer may carry a new refresh token: store it, the one sent may be spent.</summary>
 public sealed class XTokens
 {
     internal XTokens(string accessToken, string? refreshToken, DateTimeOffset? expiresAt)

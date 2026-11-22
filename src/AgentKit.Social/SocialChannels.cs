@@ -78,7 +78,8 @@ public sealed class SocialChannels
     /// <summary>
     /// Trades an X refresh token for a new pair (<c>POST https://api.x.com/2/oauth2/token</c>,
     /// https://docs.x.com/resources/fundamentals/authentication/oauth-2-0/user-access-token). The refresh token needs the
-    /// <c>offline.access</c> scope; X rotates it, so store the new one before using the access token.
+    /// <c>offline.access</c> scope. Store the refresh token the answer carries before using the access token: the one sent may
+    /// be spent.
     /// </summary>
     public async Task<XTokenRefresh> RefreshXTokenAsync(XClient client, string refreshToken, CancellationToken cancellationToken = default)
     {
@@ -99,7 +100,7 @@ public sealed class SocialChannels
     }
 }
 
-/// <summary>Bluesky sessions by account, in memory: createSession is rate-limited per account (30 per 5 minutes).</summary>
+/// <summary>Bluesky sessions by account, in memory: createSession is rate-limited per account.</summary>
 internal sealed class BlueskySessions
 {
     private readonly ConcurrentDictionary<string, BlueskySession> _sessions = new(StringComparer.Ordinal);

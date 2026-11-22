@@ -9,16 +9,16 @@ namespace AgentKit.Social.Internal;
 /// Discord, by incoming webhook or by bot, one message with an embed.
 /// <list type="bullet">
 /// <item>Webhook: <c>POST /webhooks/{id}/{token}?wait=true</c>, which answers with the message
-/// (https://discord.com/developers/docs/resources/webhook#execute-webhook).</item>
+/// (https://docs.discord.com/developers/resources/webhook).</item>
 /// <item>Bot: <c>POST /channels/{id}/messages</c> with <c>Authorization: Bot …</c>, a <c>nonce</c> (at most 25 characters)
 /// and <c>enforce_nonce</c>, which returns the earlier message for a nonce seen "in the past few minutes"
-/// (https://discord.com/developers/docs/resources/message#create-message); optionally crossposted
+/// (https://docs.discord.com/developers/resources/message); optionally crossposted
 /// (<c>POST /channels/{id}/messages/{id}/crosspost</c>).</item>
 /// <item>Limits: content 2000 characters; embed title 256, description 4096
-/// (https://discord.com/developers/docs/resources/message#embed-object-embed-limits).</item>
+/// (https://docs.discord.com/developers/resources/message).</item>
 /// <item>Mentions: <c>allowed_mentions: { parse: [] }</c>, so a post's text never pings anyone.</item>
 /// <item>Errors: <c>{ message, code }</c>; a 429 carries <c>retry_after</c> in seconds in the body and the headers
-/// (https://discord.com/developers/docs/topics/rate-limits).</item>
+/// (https://docs.discord.com/developers/topics/rate-limits).</item>
 /// </list>
 /// The message's address needs the server id, read once from the webhook or the channel.
 /// </summary>
@@ -67,7 +67,7 @@ internal sealed class DiscordChannel : ChannelBase
         // With a card the link is the embed's; without one it goes in the text and Discord unfurls it. Hashtags mean
         // nothing on Discord, so they are left out.
         var text = TextRules.Assemble(post.Text, post.Card is null ? post.Link : null, post.Link?.AbsoluteUri, [], includeTags: false);
-        var problems = new List<string>();
+        var problems = new List<string>(CardProblems(post));
         if (text.Length > MaxContent) problems.Add($"The post is {text.Length} characters and Discord takes {MaxContent}.");
         if (text.Length == 0 && post.Card is null) problems.Add("The post is empty.");
         return new SocialComposition(text, text.Length, MaxContent, "characters", problems);

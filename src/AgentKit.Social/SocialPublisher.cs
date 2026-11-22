@@ -109,6 +109,8 @@ public sealed class SocialPublisher(ISocialPostLedger ledger)
         ArgumentNullException.ThrowIfNull(post);
         var composed = channel.Compose(post);
         if (!composed.Fits) return SocialPostResult.Failed(SocialFailureKind.Rejected, string.Join(" ", composed.Problems));
+        // Before the row: a call cancelled before anything is sent leaves no pending attempt to be "unconfirmed" later.
+        cancellationToken.ThrowIfCancellationRequested();
 
         var fresh = channel.BeginAttempt(post);
         var record = await ledger.BeginAsync(new SocialAttemptRecord

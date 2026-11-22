@@ -11,11 +11,11 @@ namespace AgentKit.Social.Internal;
 /// (https://docs.joinmastodon.org/methods/statuses/#create).</item>
 /// <item>Length: the instance's <c>max_characters</c>, every URL counted as <c>characters_reserved_per_url</c>
 /// (https://docs.joinmastodon.org/methods/instance/#v2).</item>
-/// <item>Card: the instance builds the link's preview card from the page itself
-/// (https://docs.joinmastodon.org/entities/PreviewCard/); a card picture is uploaded only when asked, with
+/// <item>Card: the instance builds the link's preview card from the page itself; a card picture is uploaded only when
+/// asked, with
 /// <c>POST /api/v2/media</c> (https://docs.joinmastodon.org/methods/media/#v2).</item>
-/// <item>Errors: <c>{ "error": "…" }</c>; rate limits in <c>X-RateLimit-Reset</c>, an ISO 8601 date
-/// (https://docs.joinmastodon.org/api/rate-limits/).</item>
+/// <item>Errors: <c>{ "error": "…" }</c>; rate limits in <c>X-RateLimit-Reset</c>, "a timestamp"
+/// (https://docs.joinmastodon.org/api/rate-limits/; read as an ISO 8601 date or Unix seconds).</item>
 /// </list>
 /// </summary>
 internal sealed class MastodonChannel : ChannelBase
@@ -50,7 +50,7 @@ internal sealed class MastodonChannel : ChannelBase
         ArgumentNullException.ThrowIfNull(post);
         var text = TextRules.Assemble(post.Text, post.Link, post.Link?.AbsoluteUri, TextRules.NormalizeTags(post.Tags));
         var length = TextRules.MastodonLength(text, _account.CharactersReservedPerUrl);
-        var problems = new List<string>();
+        var problems = new List<string>(CardProblems(post));
         if (length > _account.MaxCharacters) problems.Add($"The post is {length} characters and this instance takes {_account.MaxCharacters}.");
         if (text.Length == 0) problems.Add("The post is empty.");
         return new SocialComposition(text, length, _account.MaxCharacters, "characters", problems);

@@ -62,6 +62,47 @@ public sealed class PublisherTests : IDisposable
     }
 
     [Fact]
+    public async Task A_call_cancelled_before_sending_leaves_no_pending_attempt()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _host.Publisher.PostAsync(X(), Post(), cancellationToken: cts.Token));
+        Assert.Null(_host.Ledger.Find("post-1"));
+
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.Created, new { data = new { id = "1" } });
+        Assert.True((await _host.Publisher.PostAsync(X(), Post())).Posted);
+    }
+
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, "text/html")]
+    [InlineData(true, "not a media type")]
+    public async Task A_card_every_network_would_drop_or_choke_on_is_refused_before_anything_is_sent(bool withLink, string? imageType)
+    {
+        var post = new SocialPost
+        {
+            Text = "Hello",
+            Link = withLink ? new Uri("https://blog.example.com/p") : null,
+            Card = new LinkCard { Title = "T", Image = Pictures.Png(16), ImageContentType = imageType },
+            IdempotencyKey = "card",
+        };
+        ISocialChannel[] channels =
+        [
+            _host.Channels.Bluesky(new BlueskyAccount("a.bsky.social", "pass-word")),
+            _host.Channels.Mastodon(new MastodonAccount(new Uri("https://m.example"), "token-1") { AttachCardImage = true }),
+            _host.Channels.Discord(new DiscordWebhook(new Uri("https://discord.com/api/webhooks/1/abcdefghijklmnop"))),
+            X(),
+        ];
+        foreach (var channel in channels)
+        {
+            var result = await _host.Publisher.PostAsync(channel, post);
+            Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+        }
+        Assert.Empty(_host.Network.Seen);
+        Assert.Null(_host.Ledger.Find("card"));
+    }
+
+    [Fact]
     public async Task A_key_used_for_another_channel_is_a_programming_error()
     {
         _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.Created, new { data = new { id = "1" } });
