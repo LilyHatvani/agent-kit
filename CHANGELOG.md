@@ -21,7 +21,9 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
     - A Discord webhook id with a sign (`+1`) or past 64 bits, or an API segment other than `v<n>`, is refused.
     - A `Retry-After` with a fraction is read, and it now goes before the reset headers (1.5 s where
       `X-RateLimit-Reset-After: 30` gave 30 s), as a whole-seconds one always did. One with a sign or an exponent is
-      ignored, so the network's reset header or body still decides.
+      ignored, so the network's reset header or body still decides. The reset headers (`X-RateLimit-Reset-After` and
+      the epoch ones) are read just as strictly, so a malformed one leaves the wait to the body's `retry_after`
+      (Discord, Telegram).
     - A body `retry_after` of a day or more waits a day; it was ignored before.
   - Changed, and named here so nothing is a surprise:
     - The Discord host is compared as its IDN form, so a full-width `ｄiscord.com` reads as `discord.com`. The request
@@ -83,7 +85,8 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 - **Stricter, for URLs no service hands out:**
   - `Discord.WebhookRefusal` refuses a webhook id with a sign or past 64 bits, and an API segment other than `v<n>`
     (`/api/x10/webhooks/…`).
-  - `Slack.WebhookRefusal` refuses a query or a fragment.
+  - `Slack.WebhookRefusal` refuses a query or a fragment, with a refusal that says so. A wrong host or path keeps the
+    old text.
 - README: a Discord or Slack webhook's path is its token. Send through a client with `.RemoveAllLoggers()`, and keep
   HttpClient's trace spans for those hosts out of exports.
 - **First release**, for Agent Blog's notifications: Discord and Slack webhooks, ntfy and Standard Webhooks signed
