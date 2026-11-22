@@ -1,6 +1,6 @@
 # AgentKit.Social
 
-Post to social networks from a server: Bluesky, Mastodon, Discord and X behind one contract. Pictures go as each
+Post to social networks from a server: Bluesky, Mastodon, Discord, X, Slack and Telegram behind one contract. Pictures go as each
 network's own media; a link card is the fallback for a post without pictures. Built for a product that shares what it
 publishes (a blog post, an announcement), with no product names in the API. Nothing is stored: the host passes
 credentials in and keeps its own record of what was posted.
@@ -73,6 +73,8 @@ the same set again skips the channels that are up and resumes or retries the res
 | Mastodon | `POST /api/v2/media` (polls `GET /api/v1/media/:id` while it answers 206), then `media_ids[]` | `MaxMediaAttachments` (4) | `ImageSizeLimit` (16 MiB) | becomes a gifv, beside pictures too, up to `VideoSizeLimit` (99 MiB) | 1500 |
 | X | `POST /2/media/upload` (`tweet_image` or `tweet_gif`, polls the STATUS command while processing), `POST /2/media/metadata`, then `media.media_ids` | 4 | 5,000,000 bytes | alone, up to 15,000,000 bytes | 1000 |
 | Discord | files on the message itself (`files[n]`, `attachments[]`), with `SUPPRESS_EMBEDS` so the link doesn't unfurl into a card | 10 | 20 MiB, 25 MiB a message | plays among other pictures | 1024 |
+| Telegram | `sendPhoto`, `sendMediaGroup` (2 to 10, files as `attach://` parts, the caption on the first) or `sendAnimation` | 10 | 10 MB; width + height ≤ 10000, ratio ≤ 20 | alone, up to 50 MB | none exists: required by the contract, not sent, with a note |
+| Slack | refused: a webhook can't attach pictures (Slack previews the link's page itself) | 0 | — | — | — |
 
 Mastodon's numbers are the defaults; set them from the instance's `GET /api/v2/instance` (`configuration.statuses`,
 `configuration.media_attachments`). Discord's 10 files a message is its long-standing limit, not stated on the pages
@@ -107,6 +109,8 @@ post's `IdempotencyKey`. The host backs it with its own table:
 | Discord bot | `nonce` + `enforce_nonce`, checked "in the past few minutes" | resends with the same nonce within 2 minutes; later, `Unconfirmed` |
 | Discord webhook | none | `Unconfirmed` |
 | X | none (X refuses an exact repeat of a recent post with 403, which arrives as `Rejected`) | `Unconfirmed` |
+| Slack webhook | none | `Unconfirmed` |
+| Telegram | none (no client id on a send) | `Unconfirmed` |
 
 `Unconfirmed` means a person checks the network. If nothing is there, `PostAsync(channel, post, resendUnconfirmed: true)`
 sends again. A refusal that created nothing (a rate limit, a credential, a validation error, a picture that didn't
@@ -179,10 +183,38 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
 - `Id` is `x` and Mastodon's is the instance host: they don't tell two accounts on the same network apart, so keep the
   host's channel id in the idempotency key (`KeyFor`).
 
+**Slack** (an incoming webhook).
+- One message: `text` with `unfurl_links`, so Slack previews the page (picture, title, description) from its own Open
+  Graph tags; a card the host passes isn't sent. Hashtags are left out.
+- `&`, `<` and `>` become entities (Slack's escaping rule, AgentKit.Channels' `Slack.Escape`, the one its Slack
+  notifications use), so the words can't open a link, a mention or `<!channel>`. The link goes in angle brackets,
+  Slack's link form.
+- 4,000 characters: Slack's guidance for a readable message (it truncates past 40,000). Recalled, not read: Slack's
+  docs weren't reachable when the adapter was written.
+- Only `https://hooks.slack.com/services/…` URLs are taken, checked by Channels' `Slack.WebhookRefusal` (no query or
+  fragment either). The answer is `ok` and names no message, so `PostUrl` is
+  null with a note, and `PostId` is `slack:<attempt token>`. `Id` is `slack-webhook:<hash>`: the URL is the credential.
+- 404 and 410 (`no_service`, `channel_not_found`, `channel_is_archived`), 401 and 403 are `Auth` (what Channels reads
+  as gone): the webhook needs replacing. A 200 without `ok` may have posted.
+
+**Telegram** (a bot from @BotFather and the chat it posts in: `@channelname` or a numeric chat id; in a channel the bot
+is an administrator allowed to post).
+- `POST https://api.telegram.org/bot<token>/<method>`. Limits from the Bot API reference, as `@grammyjs/types` 5.2.0
+  carries its text (core.telegram.org wasn't reachable): text "1-4096 characters", a caption "0-1024", counted in UTF-16
+  units.
+- No pictures: `sendMessage` with `link_preview_options.url` (and `prefer_large_media`), so Telegram previews the page.
+  With pictures, the text is the caption. No `parse_mode`: the text is plain, nothing in it is markup. Tags are kept.
+- The address is `https://t.me/<username>/<id>` for a public chat, `https://t.me/c/<id>/<id>` for a private
+  supergroup or channel (it opens for members); a private chat has none, with a note.
+- 401 and 403 (a revoked token, a bot removed from the chat), "chat not found", and a group that became a supergroup
+  (`migrate_to_chat_id`, named in the message) are `Auth`: the setting needs changing. A 429 waits
+  `parameters.retry_after`.
+- The token travels in the request path, like a Discord webhook's: see *Traces* below.
+
 ## Credentials and egress
 
 - **The package stores nothing.** Each account type (`BlueskyAccount`, `MastodonAccount`, `DiscordWebhook`,
-  `DiscordBotChannel`, `XAccount`, `XClient`) holds its secret in memory and prints without it. Keep them sealed at rest
+  `DiscordBotChannel`, `XAccount`, `XClient`, `SlackWebhook`, `TelegramChat`) holds its secret in memory and prints without it. Keep them sealed at rest
   with `AgentKit.Secrets` (one sealed value per channel, associated data naming the channel row) and open them just
   before making the channel.
 - **HTTP.** Two named clients: `AgentKit.Social` for the networks' APIs (public addresses on port 443, no redirects)
@@ -207,8 +239,9 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
   per post (`Posted to <channel id>: <post id>`) and one Warning per failure, with the category and the scrubbed message.
 - **Traces.** HttpClient's own trace spans (`System.Net.Http`, read by OpenTelemetry's HttpClient instrumentation or
   Application Insights) carry `url.full` with the path; .NET redacts only the query. A host that exports those spans
-  exports a Discord webhook's token with them. Either filter the span for `discord.com/api/v10/webhooks/` (the
-  instrumentation's filter or enrich hook) or post through a bot channel, whose token travels in a header.
+  exports a Discord webhook's token, a Slack webhook's path and a Telegram bot's token with them. Either filter the
+  span for `discord.com/api/v10/webhooks/`, `hooks.slack.com/services/` and `api.telegram.org/bot` (the
+  instrumentation's filter or enrich hook) or, for Discord, post through a bot channel, whose token travels in a header.
 
 ## Pictures are sent as given
 

@@ -13,12 +13,16 @@ public static class Slack
     /// <summary>Slack's limit on a section block's text.</summary>
     public const int MaxSection = 3000;
 
-    /// <summary>Why <paramref name="webhook"/> isn't a Slack incoming webhook URL, or null.</summary>
+    /// <summary>
+    /// Why <paramref name="webhook"/> isn't a Slack incoming webhook URL, or null: https on <c>hooks.slack.com</c>, the
+    /// default port, no user name, a path under <c>/services/</c>, no query or fragment (Slack hands out none). The one
+    /// check of a Slack webhook in this repository: AgentKit.Social's <c>SlackWebhook</c> is built on it.
+    /// </summary>
     public static string? WebhookRefusal(Uri webhook)
     {
         ArgumentNullException.ThrowIfNull(webhook);
         return webhook.IsAbsoluteUri && webhook.Scheme == Uri.UriSchemeHttps && webhook.IdnHost.Equals("hooks.slack.com", StringComparison.OrdinalIgnoreCase)
-            && webhook.UserInfo.Length == 0 && webhook.IsDefaultPort
+            && webhook.UserInfo.Length == 0 && webhook.IsDefaultPort && webhook.Query.Length == 0 && webhook.Fragment.Length == 0
             && webhook.AbsolutePath.StartsWith("/services/", StringComparison.Ordinal) && webhook.AbsolutePath.Length > "/services/".Length
             ? null
             : "A Slack incoming webhook URL starts with https://hooks.slack.com/services/.";

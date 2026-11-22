@@ -14,6 +14,12 @@ public static class SocialNetworks
 
     /// <summary>X, through API v2.</summary>
     public const string X = "x";
+
+    /// <summary>A Slack incoming webhook.</summary>
+    public const string Slack = "slack";
+
+    /// <summary>A Telegram channel, group or chat, through a bot.</summary>
+    public const string Telegram = "telegram";
 }
 
 /// <summary>
@@ -27,7 +33,8 @@ public interface ISocialChannel
 
     /// <summary>
     /// A stable name for this account that holds no secret: <c>bluesky:&lt;identifier&gt;</c>,
-    /// <c>mastodon:&lt;instance host&gt;</c>, <c>discord-webhook:&lt;webhook id&gt;</c>, <c>discord:&lt;channel id&gt;</c>, <c>x</c>.
+    /// <c>mastodon:&lt;instance host&gt;</c>, <c>discord-webhook:&lt;webhook id&gt;</c>, <c>discord:&lt;channel id&gt;</c>, <c>x</c>,
+    /// <c>slack-webhook:&lt;a hash of the URL&gt;</c>, <c>telegram:&lt;chat&gt;</c>.
     /// Mastodon's and X's don't tell two accounts on the same instance or network apart, so the host's channel id
     /// belongs in <see cref="SocialPost.IdempotencyKey"/>.
     /// </summary>
@@ -91,7 +98,7 @@ public enum SocialIdempotencyKind
     /// <summary>The network drops a repeat of the same key within <see cref="SocialIdempotency.Window"/> (Mastodon, a Discord bot).</summary>
     KeyWindow,
 
-    /// <summary>Nothing to check (a Discord webhook, X): a retry after a lost answer is <see cref="SocialFailureKind.Unconfirmed"/>.</summary>
+    /// <summary>Nothing to check (a Discord or Slack webhook, X, Telegram): a retry after a lost answer is <see cref="SocialFailureKind.Unconfirmed"/>.</summary>
     None,
 }
 

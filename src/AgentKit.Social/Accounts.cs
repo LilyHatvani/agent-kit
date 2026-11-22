@@ -95,7 +95,7 @@ public sealed class DiscordWebhook(Uri url)
     public Uri? AvatarUrl { get; init; }
 
     /// <inheritdoc />
-    public override string ToString() => $"Discord webhook {WebhookId} (token hidden)";
+    public override string ToString() => Address.ToString();
 
     private static DiscordWebhookAddress Read(Uri url)
     {
@@ -237,4 +237,68 @@ public sealed class XTokenRefresh
 
     /// <inheritdoc />
     public override string ToString() => Failure is null ? "X token refreshed" : $"X token refresh failed: {Failure.Kind}";
+}
+
+/// <summary>A Slack incoming webhook (an app's Incoming Webhooks page, Add New Webhook to Workspace, Copy).</summary>
+public sealed class SlackWebhook
+{
+    /// <summary>The webhook.</summary>
+    /// <param name="url">
+    /// The webhook URL, <c>https://hooks.slack.com/services/…</c>. The whole path is the credential. It is checked by
+    /// AgentKit.Channels' <see cref="Slack.WebhookRefusal"/>, the one check both packages use.
+    /// </param>
+    /// <exception cref="ArgumentException">It isn't a Slack incoming webhook URL.</exception>
+    public SlackWebhook(Uri url)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        if (Slack.WebhookRefusal(url) is { } refusal) throw new ArgumentException(refusal, nameof(url));
+        Url = new Uri("https://hooks.slack.com" + url.AbsolutePath);
+    }
+
+    internal Uri Url { get; }
+
+    /// <inheritdoc />
+    public override string ToString() => "Slack webhook (URL hidden)";
+}
+
+/// <summary>
+/// A Telegram bot (made with @BotFather, which gives its token) and the chat it posts in: a public channel or group by
+/// <c>@username</c>, or any chat by its numeric id. For a channel, the bot is an administrator allowed to post messages.
+/// </summary>
+/// <param name="botToken">The bot's token, <c>&lt;digits&gt;:&lt;secret&gt;</c>.</param>
+/// <param name="chat"><c>@channelname</c>, or a chat id such as <c>-1001234567890</c>.</param>
+public sealed class TelegramChat(string botToken, string chat)
+{
+    /// <summary>The bot's token.</summary>
+    internal string BotToken { get; } = ValidToken(botToken, nameof(botToken));
+
+    /// <summary>The chat: <c>@username</c> or a numeric id (not secret).</summary>
+    public string Chat { get; } = ValidChat(chat, nameof(chat));
+
+    /// <summary>The bot's numeric id, the part of the token before the colon (not secret).</summary>
+    public string BotId => BotToken[..BotToken.IndexOf(':', StringComparison.Ordinal)];
+
+    /// <inheritdoc />
+    public override string ToString() => $"Telegram bot {BotId} in {Chat} (token hidden)";
+
+    private static string ValidToken(string token, string paramName)
+    {
+        var t = BlueskyAccount.Required(token, paramName);
+        var colon = t.IndexOf(':', StringComparison.Ordinal);
+        // The token goes in the request path, so it must be nothing but the characters a token has.
+        if (colon < 1 || !t[..colon].All(char.IsAsciiDigit) || t.Length - colon < 2
+            || !t[(colon + 1)..].All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))
+            throw new ArgumentException("A Telegram bot token is the bot's id, a colon and the secret, as @BotFather gives it.", paramName);
+        return t;
+    }
+
+    private static string ValidChat(string chat, string paramName)
+    {
+        var c = BlueskyAccount.Required(chat, paramName);
+        if (c.StartsWith('@') && c.Length is >= 6 and <= 33 && c[1..].All(x => char.IsAsciiLetterOrDigit(x) || x == '_') && char.IsAsciiLetter(c[1]))
+            return c;
+        if (long.TryParse(c, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out _))
+            return c;
+        throw new ArgumentException("A Telegram chat is @username (5 to 32 letters, digits and _) or a numeric chat id.", paramName);
+    }
 }

@@ -6,7 +6,7 @@ Outgoing messages to the places people read, without a vendor SDK. Written for A
 | Destination | Builder | Address check |
 | --- | --- | --- |
 | Discord channel webhook | `Discord.Request(webhook, message, username)`: one embed, `allowed_mentions: { parse: [] }`, the body's markdown escaped, the name cut to 80, `?wait=true` | `Discord.WebhookRefusal`, `DiscordWebhookAddress` |
-| Slack incoming webhook | `Slack.Request(webhook, message)`: a section block, `& < >` escaped, no unfurl | `Slack.WebhookRefusal` |
+| Slack incoming webhook | `Slack.Request(webhook, message)`: a section block, `& < >` escaped, no unfurl | `Slack.WebhookRefusal` (no query or fragment) |
 | ntfy | `Ntfy.Request(server, topic, token, message)`: JSON publish to the server root, token as bearer | `Ntfy.ServerRefusal`, `Ntfy.TopicRefusal` |
 | Signed webhook | `StandardWebhooks.Request(url, secret, messageId, now, message)`: `webhook-id`, `-timestamp`, `-signature` (v1 HMAC-SHA256) | `StandardWebhooks.UrlRefusal` |
 
@@ -23,8 +23,9 @@ Outgoing messages to the places people read, without a vendor SDK. Written for A
   `Retry-After`, capped at 12 hours, or 1 minute without one; 408, 425, 5xx), `Gone` (401, 403, 404, 410: stop and tell
   the owner), `Failed` (another status). The error carries the status and the start of the body, decoded leniently. Its
   two parts are public: `SendOutcome.Classify(status)` reads a status without the body, and
-  `SendOutcome.RetryAfterOf(response, now, max)` reads `Retry-After` (seconds, with a fraction too, or a date) finite
-  and capped, so `NaN` or `1e300` is never a throw.
+  `SendOutcome.RetryAfterOf(response, now, max)` reads `Retry-After` (whole seconds or a date, seconds with a fraction
+  too) and nothing else: a sign, an exponent, `NaN` or words is no header, never a throw and never a wait that beats a
+  caller's better source. `SendOutcome.Bounded(wait, max)` keeps a wait between none and a cap.
 - **One retry schedule**, `Retries.Next(attemptsMade, retryAfter)`: 1 m, 5 m, 30 m, 2 h, 12 h, then dead.
 - **Receivers' side** for tests: `StandardWebhooks.Verify` (tolerance 5 minutes, constant-time compare, several
   signatures).
@@ -35,8 +36,10 @@ logs write the URI, path and all. HttpClient's trace spans (`System.Net.Http`, e
 Insights) carry `url.full` with the path too, and .NET redacts only the query: filter those spans for the webhook hosts
 before exporting them. Web Push is `AgentKit.Push`.
 
-**AgentKit.Social** (public posts to Bluesky, Mastodon, Discord and X) is built on this package: its Discord channel
-reads the webhook URL with `DiscordWebhookAddress`, posts with `NoMentions()` and the `Discord.Max*` limits, cuts with
-`Text.Truncate`, and reads every network's refusal with `SendOutcome.Classify` and `RetryAfterOf`. It keeps what a
-public post needs and a notification doesn't: its ledger instead of `Retries`, and the post's text as written instead
-of `Discord.Escape` (it shows the same words on every network; nothing in it pings anyone).
+**AgentKit.Social** (public posts to Bluesky, Mastodon, Discord, X, Slack and Telegram) is built on this package: its
+Discord channel reads the webhook URL with `DiscordWebhookAddress` and posts with `NoMentions()` and the
+`Discord.Max*` limits; its Slack channel checks the URL with `Slack.WebhookRefusal` and escapes with `Slack.Escape`;
+it cuts with `Text.Truncate` and reads every network's refusal with `SendOutcome.Classify`, `RetryAfterOf` and
+`Bounded`. It keeps what a public post needs and a notification doesn't: its ledger instead of `Retries`, and on
+Discord the post's text as written instead of `Discord.Escape` (it shows the same words on every network; nothing in it
+pings anyone).
