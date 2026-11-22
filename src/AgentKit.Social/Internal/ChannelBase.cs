@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AgentKit.Channels;
 using AgentKit.Fetch;
 using Microsoft.Extensions.Logging;
 
@@ -218,8 +219,10 @@ internal abstract class ChannelBase : ISocialChannel
     }
 
     /// <summary>
-    /// The usual mapping of a refused HTTP answer: 401 and 403 are the credentials, 429 a wait, other 4xx a rejection with
-    /// the network's message, 5xx transient (and the post may be up).
+    /// The usual mapping of a refused HTTP answer, on AgentKit.Channels' one reading of a status
+    /// (<see cref="SendOutcome.Classify"/>): 401 and 403 are the credentials, 429 a wait, 5xx transient (and the post may
+    /// be up), 408 and 425 transient (the network didn't act on the request), other 4xx a rejection with the network's
+    /// message. A 404 or 410 stays a rejection here; Discord's adapter reads it as a webhook that is gone.
     /// </summary>
     protected SocialFailure FromStatus(HttpResponseMessage response, string? networkMessage)
     {
@@ -227,11 +230,12 @@ internal abstract class ChannelBase : ISocialChannel
         var status = (int)response.StatusCode;
         var said = Clean(networkMessage);
         var detail = said.Length > 0 ? $": {said}" : ".";
-        return status switch
+        return (SendOutcome.Classify(status), status) switch
         {
-            401 or 403 => new SocialFailure(SocialFailureKind.Auth, Clean($"{Name} refused the credentials ({status}){detail}")),
-            429 => new SocialFailure(SocialFailureKind.RateLimited, Clean($"{Name} asked to wait{detail}"), RetryAfter(response)),
-            >= 500 => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} had a server error ({status}){detail}"), MayHavePosted: true),
+            (SendResult.Gone, 401 or 403) => new SocialFailure(SocialFailureKind.Auth, Clean($"{Name} refused the credentials ({status}){detail}")),
+            (SendResult.Retry, 429) => new SocialFailure(SocialFailureKind.RateLimited, Clean($"{Name} asked to wait{detail}"), RetryAfter(response)),
+            (SendResult.Retry, >= 500) => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} had a server error ({status}){detail}"), MayHavePosted: true),
+            (SendResult.Retry, _) => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} didn't take the request in time and asked for it again ({status}){detail}")),
             _ => new SocialFailure(SocialFailureKind.Rejected, Clean($"{Name} refused the post ({status}){detail}")),
         };
     }
@@ -247,7 +251,8 @@ internal abstract class ChannelBase : ISocialChannel
     };
 
     /// <summary>
-    /// How long a 429 asks to wait: <c>Retry-After</c> (seconds or a date), then the network's reset headers
+    /// How long a 429 asks to wait: <c>Retry-After</c> (seconds or a date), read by AgentKit.Channels'
+    /// <see cref="SendOutcome.RetryAfterOf"/> with this package's one-day bound, then the network's reset headers
     /// (<c>ratelimit-reset</c> and <c>x-rate-limit-reset</c> in Unix seconds, <c>X-RateLimit-Reset</c> as Unix seconds or an ISO 8601 date,
     /// <c>X-RateLimit-Reset-After</c> in seconds).
     /// </summary>
@@ -255,11 +260,7 @@ internal abstract class ChannelBase : ISocialChannel
     {
         ArgumentNullException.ThrowIfNull(response);
         var now = Now;
-        if (response.Headers.RetryAfter is { } ra)
-        {
-            if (ra.Delta is { } d) return Positive(d);
-            if (ra.Date is { } date) return Positive(date - now);
-        }
+        if (SendOutcome.RetryAfterOf(response, now, MaxWait) is { } retryAfter) return retryAfter;
         if (Header(response, "X-RateLimit-Reset-After") is { } after
             && double.TryParse(after, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
             return Wait(seconds);

@@ -42,6 +42,20 @@ public sealed class RobustnessTests : IDisposable
         Assert.True(result.Failure.RetryAfter is null || result.Failure.RetryAfter <= TimeSpan.FromDays(1));
     }
 
+    /// <summary>A status read by AgentKit.Channels' one reading: 408 and 425 are worth sending again; a 404 off Discord is still a refusal.</summary>
+    [Theory]
+    [InlineData(408, SocialFailureKind.Transient)]
+    [InlineData(425, SocialFailureKind.Transient)]
+    [InlineData(404, SocialFailureKind.Rejected)]
+    [InlineData(410, SocialFailureKind.Rejected)]
+    public async Task A_status_off_discord_keeps_its_network_meaning(int status, SocialFailureKind kind)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json((HttpStatusCode)status, new { title = "No", detail = "No" });
+        var result = await X().PostAsync(Post());
+        Assert.Equal(kind, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+    }
+
     [Fact]
     public async Task An_x_answer_that_isnt_an_object_after_the_post_may_be_up_is_a_result_that_says_so()
     {

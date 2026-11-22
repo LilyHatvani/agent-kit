@@ -6,6 +6,15 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 
 ### Unreleased
 
+- **Built on AgentKit.Channels** (a package dependency now), so the two packages that send Discord webhooks share one
+  place for what they share: the webhook URL is read by `DiscordWebhookAddress`, the payload takes `Discord.NoMentions()`
+  and the `Discord.Max*` limits, card fields and the webhook `Username` are cut with `Text.Truncate` (the name now to
+  Discord's 80), and every network's refusal is read with `SendOutcome.Classify` and `SendOutcome.RetryAfterOf`.
+  `TextRules.Cut` and the internal `DiscordWebhookUrl` are gone.
+  - Changed on that reading, each the stricter or the correct side: a 408 or 425 is `Transient` (the network didn't
+    act on it), not `Rejected`; Discord's 410 is `Auth` like its 404; a webhook id with a sign (`+1`) or past 64 bits,
+    or an API segment other than `v<n>`, is refused; a `Retry-After` with a fraction is read. Off Discord a 404 or 410
+    is still `Rejected`.
 - **First release.** One `ISocialChannel` contract and adapters for Bluesky (AT Protocol, app password, link and tag
   facets in UTF-8 bytes, an images embed or an external card), Mastodon (instance token, `Idempotency-Key`, the
   instance's own limits, media processing polled), Discord (incoming webhook or bot, attachments or an embed with
@@ -35,6 +44,21 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 ## AgentKit.Channels
 
 ### Unreleased
+
+- **The lower layer for AgentKit.Social's Discord channel.** Additive, nothing public removed or re-shaped:
+  `DiscordWebhookAddress` (`TryParse`, `Parse`, `Id`, `Token`, the canonical `Uri` and `ExecuteUri` on
+  `https://discord.com/api/v10`, printed without the token), `Discord.NoMentions()`, `Discord.MaxContent`,
+  `MaxFooter`, `MaxAttachmentDescription`, `MaxUsername`, `SendOutcome.Classify(status)` and
+  `SendOutcome.RetryAfterOf(response, now, max)`. `Discord.Request` keeps posting to the URL it is given.
+- **Fixed:** a `Retry-After` of `NaN`, `Infinity` or `1e300` made `SendOutcome.ReadAsync` throw (it reached
+  `TimeSpan.FromSeconds`); it is now read finite and capped. `Text.Truncate(text, 1)` threw on text of two or more
+  characters; it now gives "…". `Text.Truncate` cuts between grapheme clusters, so it never splits a flag, a ZWJ emoji
+  or a letter from its accent (it already kept surrogate pairs whole).
+- **Stricter:** `Discord.WebhookRefusal` (now `DiscordWebhookAddress`) refuses a webhook id with a sign or past 64 bits
+  and an API segment other than `v<n>` (`/api/x10/webhooks/…`), as AgentKit.Social's reading did; neither is a URL
+  Discord hands out.
+- README: a Discord or Slack webhook's path is its token, so send through a client with `.RemoveAllLoggers()` and keep
+  HttpClient's trace spans for those hosts out of exports.
 
 - **First release**, for Agent Blog's notifications: Discord and Slack webhooks, ntfy and Standard Webhooks signed
   webhooks (sign pinned to the spec's reference vector, verify for receivers). Each builder escapes agent-written text
