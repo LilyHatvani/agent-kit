@@ -302,6 +302,21 @@ public sealed class DiscordTests : IDisposable
         Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure.RetryAfter);
     }
 
+    /// <summary>The reset headers are read as strictly as Retry-After: a sign or an exponent is no header, so Discord's body decides.</summary>
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("+2")]
+    [InlineData("1e3")]
+    [InlineData("1e300")]
+    public async Task A_429_whose_reset_after_is_nonsense_takes_the_wait_from_the_body(string value)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
+            new { message = "You are being rate limited.", retry_after = 1.5, global = false }, ("X-RateLimit-Reset-After", value));
+        var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(SocialFailureKind.RateLimited, limited.Failure!.Kind);
+        Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure.RetryAfter);
+    }
+
     /// <summary>Retry-After is the standard header, so a well-formed one goes before Discord's own reset header and the body.</summary>
     [Fact]
     public async Task A_well_formed_retry_after_goes_first()

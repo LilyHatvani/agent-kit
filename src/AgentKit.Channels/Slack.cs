@@ -16,16 +16,19 @@ public static class Slack
     /// <summary>
     /// Why <paramref name="webhook"/> isn't a Slack incoming webhook URL, or null: https on <c>hooks.slack.com</c>, the
     /// default port, no user name, a path under <c>/services/</c>, no query or fragment (Slack hands out none). The one
-    /// check of a Slack webhook in this repository: AgentKit.Social's <c>SlackWebhook</c> is built on it.
+    /// check of a Slack webhook in this repository: AgentKit.Social's <c>SlackWebhook</c> is built on it. The refusal names
+    /// what is wrong (a host shows it to the person who pasted the URL) and never repeats the URL.
     /// </summary>
     public static string? WebhookRefusal(Uri webhook)
     {
         ArgumentNullException.ThrowIfNull(webhook);
-        return webhook.IsAbsoluteUri && webhook.Scheme == Uri.UriSchemeHttps && webhook.IdnHost.Equals("hooks.slack.com", StringComparison.OrdinalIgnoreCase)
-            && webhook.UserInfo.Length == 0 && webhook.IsDefaultPort && webhook.Query.Length == 0 && webhook.Fragment.Length == 0
-            && webhook.AbsolutePath.StartsWith("/services/", StringComparison.Ordinal) && webhook.AbsolutePath.Length > "/services/".Length
+        if (!(webhook.IsAbsoluteUri && webhook.Scheme == Uri.UriSchemeHttps && webhook.IdnHost.Equals("hooks.slack.com", StringComparison.OrdinalIgnoreCase)
+              && webhook.UserInfo.Length == 0 && webhook.IsDefaultPort
+              && webhook.AbsolutePath.StartsWith("/services/", StringComparison.Ordinal) && webhook.AbsolutePath.Length > "/services/".Length))
+            return "A Slack incoming webhook URL starts with https://hooks.slack.com/services/.";
+        return webhook.Query.Length == 0 && webhook.Fragment.Length == 0
             ? null
-            : "A Slack incoming webhook URL starts with https://hooks.slack.com/services/.";
+            : "A Slack incoming webhook URL has no query or fragment (nothing after ? or #): copy it again from the app's Incoming Webhooks page.";
     }
 
     /// <summary>The POST for <paramref name="message"/>.</summary>

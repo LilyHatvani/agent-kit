@@ -20,18 +20,21 @@ public sealed class RobustnessTests : IDisposable
 
     private static SocialPost Post(string key = "k") => new() { Text = "Hello", Link = new Uri("https://blog.example.com/p"), IdempotencyKey = key };
 
-    public static TheoryData<string, string, string> RateLimitHeaders => new()
+    /// <summary>The header, its value, and the wait it gives exactly (a <see cref="TimeSpan"/> as text, or null for none).</summary>
+    public static TheoryData<string, string, string, string?> RateLimitHeaders => new()
     {
-        { "x", "x-rate-limit-reset", "1763830000000" },       // Unix milliseconds
-        { "x", "x-rate-limit-reset", "99999999999999999" },
-        { "x", "X-RateLimit-Reset-After", "NaN" },
-        { "x", "X-RateLimit-Reset-After", "1e300" },
-        { "bluesky", "ratelimit-reset", "99999999999999999" },
+        { "x", "x-rate-limit-reset", "1763830000000", "00:00:00" },        // Unix milliseconds, a year before the clock: now
+        { "x", "x-rate-limit-reset", "99999999999999999", "1.00:00:00" },  // far ahead: the one-day cap
+        { "x", "X-RateLimit-Reset-After", "NaN", null },
+        { "x", "X-RateLimit-Reset-After", "1e300", null },                 // an exponent isn't seconds
+        { "bluesky", "ratelimit-reset", "99999999999999999", "1.00:00:00" },
+        { "x", "Retry-After", "50000", "13:53:20" },                         // under the cap, as asked
+        { "x", "Retry-After", "100000", "1.00:00:00" },                      // over it: a day exactly
     };
 
     [Theory]
     [MemberData(nameof(RateLimitHeaders))]
-    public async Task A_rate_limit_header_with_nonsense_in_it_is_still_a_rate_limit(string network, string header, string value)
+    public async Task A_rate_limit_header_with_nonsense_in_it_is_still_a_rate_limit(string network, string header, string value, string? wait)
     {
         _host.Network.Respond = r => r.Uri.AbsolutePath.EndsWith("createSession", StringComparison.Ordinal)
             ? FakeNetwork.Json(HttpStatusCode.OK, new { accessJwt = "a-jwt", refreshJwt = "r-jwt", handle = "w.bsky.social", did = "did:plc:x" })
@@ -39,7 +42,7 @@ public sealed class RobustnessTests : IDisposable
         var channel = network == "x" ? X() : Bluesky();
         var result = await channel.PostAsync(Post());
         Assert.Equal(SocialFailureKind.RateLimited, result.Failure!.Kind);
-        Assert.True(result.Failure.RetryAfter is null || result.Failure.RetryAfter <= TimeSpan.FromDays(1));
+        Assert.Equal(wait is null ? null : TimeSpan.Parse(wait, System.Globalization.CultureInfo.InvariantCulture), result.Failure.RetryAfter);
     }
 
     /// <summary>A Retry-After that isn't seconds or a date is no header: the network's own reset header still decides.</summary>

@@ -263,13 +263,15 @@ internal abstract class ChannelBase : ISocialChannel
         ArgumentNullException.ThrowIfNull(response);
         var now = Now;
         if (SendOutcome.RetryAfterOf(response, now, MaxWait) is { } retryAfter) return retryAfter;
+        // Read as strictly as RetryAfterOf reads Retry-After: digits and one decimal point, no sign, no exponent, so a
+        // malformed header is no header and the next source (a network's body retry_after) still decides.
         if (Header(response, "X-RateLimit-Reset-After") is { } after
-            && double.TryParse(after, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+            && double.TryParse(after, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var seconds))
             return Wait(seconds);
         foreach (var name in new[] { "ratelimit-reset", "x-rate-limit-reset", "X-RateLimit-Reset" })
         {
             if (Header(response, name) is not { } value) continue;
-            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch) && double.IsFinite(epoch) && epoch > 1_000_000_000)
+            if (double.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var epoch) && double.IsFinite(epoch) && epoch > 1_000_000_000)
             {
                 // Unix seconds, or milliseconds from a server that writes those.
                 var unixSeconds = epoch > 100_000_000_000 ? epoch / 1000 : epoch;

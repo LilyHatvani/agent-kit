@@ -128,8 +128,19 @@ public sealed class SharedPiecesTests
     [Theory]
     [InlineData("https://hooks.slack.com/services/T0/B0/xyz?x=1")]
     [InlineData("https://hooks.slack.com/services/T0/B0/xyz#frag")]
-    public void A_slack_webhook_has_no_query_or_fragment(string url) =>
-        Assert.NotNull(Slack.WebhookRefusal(new Uri(url)));
+    public void A_slack_webhook_has_no_query_or_fragment(string url)
+    {
+        // Agent Blog shows this text to the person who pasted the URL: it names what is wrong, not the prefix they already have.
+        var refusal = Slack.WebhookRefusal(new Uri(url));
+        Assert.NotNull(refusal);
+        Assert.Contains("query or fragment", refusal, StringComparison.Ordinal);
+        Assert.DoesNotContain("xyz", refusal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_slack_webhook_on_the_wrong_host_still_gets_the_prefix() =>
+        Assert.Equal("A Slack incoming webhook URL starts with https://hooks.slack.com/services/.",
+            Slack.WebhookRefusal(new Uri("https://hooks.slack.com.evil.example/services/T0/B0/xyz?x=1")));
 
     [Fact]
     public void A_cut_falls_between_the_characters_people_see()
@@ -141,5 +152,19 @@ public sealed class SharedPiecesTests
         Assert.Equal("café…", Text.Truncate("café au lait", 7)); // the accent stays on its letter
         Assert.Equal("caf…", Text.Truncate("café au lait", 5));
         Assert.Equal("ab…", Text.Truncate("ab cd", 4));                          // no space before the ellipsis
+    }
+
+    /// <summary>
+    /// The chosen behaviour for one character people see that is longer than the limit (an 11-unit ZWJ family under 5):
+    /// it is dropped whole and only "…" is left, never cut into pieces that render as other emoji.
+    /// </summary>
+    [Fact]
+    public void A_single_character_longer_than_the_limit_leaves_only_the_ellipsis()
+    {
+        const string family = "👩‍👩‍👧‍👦";
+        Assert.Equal(11, family.Length);
+        Assert.Equal("…", Text.Truncate(family, 5));
+        Assert.Equal("…", Text.Truncate(family, 10));
+        Assert.Equal(family, Text.Truncate(family, 11));
     }
 }
