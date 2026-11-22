@@ -2,6 +2,26 @@
 
 Per package, newest first. Versions are `0.1.<CI run number>`; an entry names the first version that carries it.
 
+## AgentKit.Mail
+
+### Unreleased
+
+- **First release**, for Agent Blog's email notifications and agent-support, shaped from what Echo of Dreams sends
+  today. Built on AgentKit.Channels (the reading of a status and of `Retry-After`, the cut, the Standard Webhooks
+  verifier) and AgentKit.Fetch (the guarded client). No Resend SDK.
+  - `Email` (from, to, subject, text, HTML, reply-to, headers, idempotency key) and `IEmailSender`;
+    `ResendEmailSender` posts it to `POST https://api.resend.com/emails` once, as the same bytes every time, with the
+    `Idempotency-Key` and the `User-Agent` Resend requires. `AddResendEmail(apiKey)` registers it and its client
+    (public addresses on 443, no redirect, no request logging, a 64 KiB answer cap), unless the host registered its own
+    sender first.
+  - `EmailResult`: sent with Resend's id, or failed as `Auth`, `RateLimited` (with the wait), `Rejected` (Resend's
+    message, trimmed) or `Transient` (with `MayHaveSent`). Expected failures never throw; the API key never reaches a
+    message or a log, and logs carry no address.
+  - `OneClickUnsubscribe.Headers(url)`: the RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` pair.
+  - `ResendWebhooks.Verify` (Svix headers: `Valid`, `Malformed`, `Stale`, `Mismatch`) and `Parse` into
+    `ResendWebhookEvent` (type, email id, recipients, bounce, suppression origin, `IsHardBounce`, the `data` object).
+  - No usage caps: only what Resend refuses, plus what can't be put on the wire unchanged.
+
 ## AgentKit.Social
 
 ### Unreleased
