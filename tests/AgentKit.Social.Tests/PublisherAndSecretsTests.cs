@@ -62,6 +62,46 @@ public sealed class PublisherTests : IDisposable
     }
 
     [Fact]
+    public async Task A_post_to_the_ticked_channels_answers_per_channel_and_a_rerun_sends_only_what_isnt_up()
+    {
+        var mastodonUp = false;
+        _host.Network.Respond = r => r.Uri.Host switch
+        {
+            "api.x.com" => FakeNetwork.Json(HttpStatusCode.Created, new { data = new { id = "1" } }),
+            "discord.com" when r.Method == HttpMethod.Post => FakeNetwork.Json(HttpStatusCode.OK, new { id = "5", channel_id = "7" }),
+            "discord.com" => FakeNetwork.Json(HttpStatusCode.OK, new { guild_id = "9" }),
+            "m.example" when mastodonUp => FakeNetwork.Json(HttpStatusCode.OK, new { id = "3", url = "https://m.example/@w/3" }),
+            _ => FakeNetwork.Json(HttpStatusCode.UnprocessableEntity, new { error = "Validation failed: try later" }),
+        };
+        SocialDelivery[] ticked =
+        [
+            new("ch-x", X(), Post("ignored") with { Text = "For X" }),
+            new("ch-masto", _host.Channels.Mastodon(new MastodonAccount(new Uri("https://m.example"), "token-1")), Post("ignored") with { Text = "For Mastodon" }),
+            new("ch-discord", _host.Channels.Discord(new DiscordWebhook(new Uri("https://discord.com/api/webhooks/1/abcdefghijklmnop"))), Post("ignored") with { Text = "For Discord" }),
+        ];
+
+        var first = await _host.Publisher.PostEachAsync("blog-post:42", ticked);
+        Assert.Equal(["ch-x", "ch-masto", "ch-discord"], first.Select(r => r.ChannelKey));
+        Assert.True(first[0].Result.Posted);
+        Assert.Equal(SocialFailureKind.Rejected, first[1].Result.Failure!.Kind);
+        Assert.True(first[2].Result.Posted);
+        Assert.Equal(SocialAttemptState.Posted, _host.Ledger.Find("blog-post:42:channel:ch-x")!.State);
+        Assert.Equal("For X", _host.Network.Seen.Single(s => s.Uri.Host == "api.x.com").Json.GetProperty("text").GetString());
+
+        mastodonUp = true;
+        var sent = _host.Network.Seen.Count;
+        var rerun = await _host.Publisher.PostEachAsync("blog-post:42", ticked);
+        Assert.True(rerun[0].Result.AlreadyPosted);
+        Assert.True(rerun[1].Result.Posted);
+        Assert.False(rerun[1].Result.AlreadyPosted);
+        Assert.True(rerun[2].Result.AlreadyPosted);
+        Assert.Equal(sent + 1, _host.Network.Seen.Count);
+        Assert.Equal("m.example", _host.Network.Seen[^1].Uri.Host);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _host.Publisher.PostEachAsync("blog-post:43", [ticked[0], ticked[0]]));
+    }
+
+    [Fact]
     public async Task A_call_cancelled_before_sending_leaves_no_pending_attempt()
     {
         using var cts = new CancellationTokenSource();

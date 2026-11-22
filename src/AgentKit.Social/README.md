@@ -25,6 +25,21 @@ SocialPostResult result = await publisher.PostAsync(channel, post);
 // else result.Failure: Auth | RateLimited (RetryAfter) | Rejected (the network's message) | Transient | Unconfirmed
 ```
 
+**Posting to the channels a person ticked.** One call, one post written per network, one result per channel:
+
+```csharp
+var results = await publisher.PostEachAsync($"blog-post:{postId}",
+[
+    new SocialDelivery(blueskyRow.Id, channels.Bluesky(blueskyAccount), blueskyDraft),
+    new SocialDelivery(xRow.Id, channels.X(xAccount), xDraft),
+    new SocialDelivery(discordRow.Id, channels.Discord(webhook), discordDraft),
+]);
+foreach (var r in results) Record(r.ChannelKey, r.Result);   // in the order given; one failure never stops another
+```
+
+Each delivery's key is `SocialPublisher.KeyFor(postKey, channelKey)` (`blog-post:42:channel:<row id>`), so running the
+same set again skips the channels that are up and resumes or retries the rest. The channels post at the same time.
+
 ## The contract
 
 - **`ISocialChannel`**: `Network`, a non-secret `Id`, `Idempotency` (what a retry can check), `Compose` (pure, no
@@ -96,10 +111,11 @@ opened) marks the attempt `Failed`, so the next call starts afresh.
 - The message address needs the server id, read once from the webhook or the channel.
 
 **X** (API v2, an OAuth 2.0 user access token with `tweet.read tweet.write users.read`).
-- **Opt-in and paid.** X's API is pay-per-use credits bought upfront, with no free posting tier
+- **Needs a paid X API plan and a user-context token.** A first-class channel like the others, but X's API is
+  pay-per-use credits bought upfront, with no free posting tier
   ([pricing](https://docs.x.com/x-api/getting-started/pricing), read 2026-11-22: "Post: Create" $0.015, "Post: Create
-  (with URL)" $0.200 per request). Every post this package sends carries a link, so each costs the URL price. Leave the
-  channel off until the owner adds a key and credits.
+  (with URL)" $0.200 per request), so a post with a link costs the URL price. The token is an OAuth 2.0 user access
+  token (authorization code with PKCE, the account that posts signs in once); an app-only bearer token can't post.
 - 280 weighted characters (twitter-text v3: most Latin text weighs 1, CJK and emoji 2, every URL 23, after NFC).
   Only `http(s)://` URLs are counted as links; twitter-text also counts a bare domain (`example.com`) as 23, so a text
   with bare domains counts a little differently. `MaxWeightedLength` raises the limit for an X Premium account.

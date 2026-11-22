@@ -68,7 +68,10 @@ public sealed class SocialChannels
         return new DiscordChannel(_context, bot);
     }
 
-    /// <summary>An X account, posting through API v2. X's API is paid; see the package README.</summary>
+    /// <summary>
+    /// An X account, posting through API v2. Needs a paid X API plan (pay-per-use credits) and an OAuth 2.0 user access
+    /// token for the posting account; an app-only bearer token can't post.
+    /// </summary>
     public ISocialChannel X(XAccount account)
     {
         ArgumentNullException.ThrowIfNull(account);

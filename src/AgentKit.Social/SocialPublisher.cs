@@ -58,6 +58,18 @@ public interface ISocialPostLedger
     Task SaveAsync(SocialAttemptRecord record, CancellationToken cancellationToken);
 }
 
+/// <summary>One item for one channel in <see cref="SocialPublisher.PostEachAsync"/>.</summary>
+/// <param name="ChannelKey">The host's stable id for the channel (its settings row), unique in the set.</param>
+/// <param name="Channel">The channel, made from that row's credentials.</param>
+/// <param name="Post">The post as written for this network; its idempotency key is set from the shared post key.</param>
+public sealed record SocialDelivery(string ChannelKey, ISocialChannel Channel, SocialPost Post);
+
+/// <summary>What became of one delivery.</summary>
+/// <param name="ChannelKey">The delivery's channel key.</param>
+/// <param name="Channel">The delivery's channel.</param>
+/// <param name="Result">The channel's own result.</param>
+public sealed record SocialDeliveryResult(string ChannelKey, ISocialChannel Channel, SocialPostResult Result);
+
 /// <summary>A ledger in this process's memory: for tests and a single instance that may forget on restart.</summary>
 public sealed class InMemorySocialPostLedger : ISocialPostLedger
 {
@@ -97,6 +109,43 @@ public sealed class InMemorySocialPostLedger : ISocialPostLedger
 /// </summary>
 public sealed class SocialPublisher(ISocialPostLedger ledger)
 {
+    /// <summary>
+    /// The idempotency key of one post on one channel: <c>&lt;postKey&gt;:channel:&lt;channelKey&gt;</c>. Use the host's own
+    /// ids (the blog post's, the channel row's), never a network's, so the key survives a credential change.
+    /// </summary>
+    public static string KeyFor(string postKey, string channelKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(postKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelKey);
+        return $"{postKey}:channel:{channelKey}";
+    }
+
+    /// <summary>
+    /// Posts one item to each of a set of channels (the ones a person ticked), each once, at the same time, and answers
+    /// per channel in the order given. One channel's failure never stops another: each result is that channel's own.
+    /// Each delivery's post carries <see cref="KeyFor"/> of the shared <paramref name="postKey"/> and its
+    /// <see cref="SocialDelivery.ChannelKey"/>, whatever key it came with, so a retry of the whole set skips the
+    /// channels that are already up and resumes the rest.
+    /// </summary>
+    /// <exception cref="ArgumentException">Two deliveries share a channel key.</exception>
+    /// <exception cref="InvalidOperationException">A channel key was used before with another channel.</exception>
+    public async Task<IReadOnlyList<SocialDeliveryResult>> PostEachAsync(string postKey, IEnumerable<SocialDelivery> deliveries,
+        bool resendUnconfirmed = false, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(deliveries);
+        var list = deliveries.ToList();
+        var duplicate = list.GroupBy(d => d.ChannelKey, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new ArgumentException($"The channel key {duplicate.Key} appears twice.", nameof(deliveries));
+        var results = await Task.WhenAll(list.Select(async d =>
+        {
+            var post = d.Post with { IdempotencyKey = KeyFor(postKey, d.ChannelKey) };
+            var result = await PostAsync(d.Channel, post, resendUnconfirmed, cancellationToken).ConfigureAwait(false);
+            return new SocialDeliveryResult(d.ChannelKey, d.Channel, result);
+        })).ConfigureAwait(false);
+        return results;
+    }
+
     /// <summary>
     /// Posts <paramref name="post"/> to <paramref name="channel"/> once. <paramref name="resendUnconfirmed"/>: a person
     /// checked the network after an <see cref="SocialFailureKind.Unconfirmed"/> and found nothing, so send again.
