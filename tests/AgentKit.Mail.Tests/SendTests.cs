@@ -119,7 +119,10 @@ public sealed class SendTests
         { "a header twice", new Email("a@example.dev", "b@example.com", "s") { Text = "x", Headers = new Dictionary<string, string> { ["X-A"] = "1", ["x-a"] = "2" } } },
         { "an empty key", Sample() with { IdempotencyKey = "" } },
         { "a key of 257", Sample() with { IdempotencyKey = new string('k', 257) } },
-        { "a key with a space", Sample() with { IdempotencyKey = "notification 42" } },
+        { "a key starting with a space", Sample() with { IdempotencyKey = " notification/42" } },
+        { "a key ending with a space", Sample() with { IdempotencyKey = "notification/42 " } },
+        { "half a surrogate pair in the text", new Email("a@example.dev", "b@example.com", "s") { Text = "a\uD800b" } },
+        { "half a surrogate pair in a header", new Email("a@example.dev", "b@example.com", "s") { Text = "x", Headers = new Dictionary<string, string> { ["X-A"] = "\uDC00" } } },
         { "a key with a line break", Sample() with { IdempotencyKey = "n/42\r\nX-Evil: 1" } },
         { "a key outside ASCII", Sample() with { IdempotencyKey = "benachrichtigung/ü" } },
     };
@@ -145,6 +148,101 @@ public sealed class SendTests
         Assert.Equal(256, key.Length);
         Assert.True((await host.Sender.SendAsync(Sample() with { IdempotencyKey = key })).Sent);
         Assert.Equal(key, Assert.Single(host.Resend.Seen).Header("Idempotency-Key"));
+    }
+
+    [Fact]
+    public async Task A_key_with_a_space_inside_goes_as_written()
+    {
+        using var host = new TestHost();
+        Assert.True((await host.Sender.SendAsync(Sample() with { IdempotencyKey = "comment notice/42" })).Sent);
+        Assert.Equal("comment notice/42", Assert.Single(host.Resend.Seen).Header("Idempotency-Key"));
+    }
+
+    [Fact]
+    public async Task Whole_emoji_and_accents_are_text_and_go()
+    {
+        using var host = new TestHost();
+        Assert.True((await host.Sender.SendAsync(new Email("a@example.dev", "b@example.com", "🎉 Café") { Text = "👩‍💻 é" })).Sent);
+    }
+
+    /// <summary>Retries what fails, as a host's ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler()) would.</summary>
+    private sealed class RetryingHandler : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = null!;
+            for (var i = 0; i < 4; i++)
+            {
+                response = await base.SendAsync(request, cancellationToken);
+                if ((int)response.StatusCode < 500) break;
+            }
+            return response;
+        }
+    }
+
+    [Fact]
+    public async Task A_hosts_default_handlers_never_reach_the_Resend_client_so_one_send_is_one_request()
+    {
+        using var host = new TestHost(s => s.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler(() => new RetryingHandler())));
+        host.Resend.Respond = _ => FakeResend.Json(HttpStatusCode.ServiceUnavailable, "{}");
+        var result = await host.Sender.SendAsync(new Email("a@example.dev", "b@example.com", "s") { Text = "no key" });
+        Assert.Equal(EmailFailureKind.Transient, result.Failure!.Kind);
+        Assert.Single(host.Resend.Seen);
+    }
+
+    [Fact]
+    public void The_registered_client_is_the_guarded_one_no_redirect_no_proxy()
+    {
+        var services = new ServiceCollection();
+        services.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler(() => new RetryingHandler()));
+        services.AddResendEmail(TestHost.ApiKey);
+        using var sp = services.BuildServiceProvider();
+        HttpMessageHandler handler = sp.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(MailDefaults.ResendHttpClientName);
+        while (handler is DelegatingHandler d)
+        {
+            Assert.IsNotType<RetryingHandler>(d);
+            handler = d.InnerHandler!;
+        }
+        var primary = Assert.IsType<SocketsHttpHandler>(handler);
+        Assert.False(primary.AllowAutoRedirect);
+        Assert.False(primary.UseProxy);
+        Assert.NotNull(primary.ConnectCallback);
+    }
+
+    [Fact]
+    public async Task A_key_an_answer_echoes_is_scrubbed_before_the_answer_is_cut()
+    {
+        using var host = new TestHost();
+        // Multibyte padding puts the key across a 300-byte cut of the raw answer.
+        host.Resend.Respond = _ => new HttpResponseMessage(HttpStatusCode.BadGateway)
+        {
+            Content = new StringContent(new string('é', 130) + "Authorization: Bearer " + TestHost.ApiKey),
+        };
+        var result = await host.Sender.SendAsync(Sample());
+        Assert.DoesNotContain("TestKey", result.Failure!.Message, StringComparison.Ordinal);
+        Assert.True(result.Failure.Message.Length <= 300);
+    }
+
+    [Fact]
+    public async Task An_answer_that_isnt_UTF_8_is_still_read_as_its_status()
+    {
+        using var host = new TestHost();
+        host.Resend.Respond = _ => new HttpResponseMessage(HttpStatusCode.UnprocessableEntity)
+        {
+            Content = new ByteArrayContent([.. "{\"name\":\"validation_error\",\"message\":\""u8.ToArray(), 0xFF, 0xFE, .. "\"}"u8.ToArray()]),
+        };
+        var result = await host.Sender.SendAsync(Sample());
+        Assert.Equal(EmailFailureKind.Rejected, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHaveSent);
+    }
+
+    [Fact]
+    public async Task A_409_on_an_email_without_a_key_doesnt_claim_one()
+    {
+        using var host = new TestHost();
+        host.Resend.Respond = _ => FakeResend.Json(HttpStatusCode.Conflict, """{"name":"resource_locked","message":"Another request is already updating this resource."}""");
+        var result = await host.Sender.SendAsync(Sample() with { IdempotencyKey = null });
+        Assert.DoesNotContain("idempotency", result.Failure!.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     // Statuses and names from https://resend.com/docs/api-reference/errors; the body is { statusCode, name, message } as

@@ -146,11 +146,12 @@ public sealed class TestHost : IDisposable
 
     private readonly ServiceProvider _services;
 
-    public TestHost()
+    public TestHost(Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddProvider(Logs).SetMinimumLevel(LogLevel.Trace));
         services.AddSingleton<TimeProvider>(Clock);
+        configure?.Invoke(services);
         services.AddResendEmail(ApiKey);
         // Replace the guarded primary handler with the fake, as a product's tests do.
         services.AddHttpClient(MailDefaults.ResendHttpClientName).ConfigurePrimaryHttpMessageHandler(() => Resend);

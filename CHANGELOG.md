@@ -12,7 +12,8 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
   - `Email` (from, to, subject, text, HTML, reply-to, headers, idempotency key) and `IEmailSender`;
     `ResendEmailSender` posts it to `POST https://api.resend.com/emails` once, as the same bytes every time, with the
     `Idempotency-Key` and the `User-Agent` Resend requires. `AddResendEmail(apiKey)` registers it and its client
-    (public addresses on 443, no redirect, no request logging, a 64 KiB answer cap), unless the host registered its own
+    (public addresses on 443, no redirect, no request logging, a 64 KiB answer cap, none of the host's
+    `ConfigureHttpClientDefaults` handlers, so a resilience handler can't resend), unless the host registered its own
     sender first.
   - `EmailResult`: sent with Resend's id, or failed as `Auth`, `RateLimited` (with the wait), `Rejected` (Resend's
     message, trimmed) or `Transient` (with `MayHaveSent`). Expected failures never throw; the API key never reaches a
@@ -26,6 +27,10 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 
 ### Unreleased
 
+- **Fixed:** a handler from the host's `ConfigureHttpClientDefaults` ran on the API client, so a standard resilience
+  handler retried a 5xx up to three times: a second post on a network with no idempotency key. The API client clears
+  those handlers now; retries are the ledger's. A handler the host adds to `SocialDefaults.ApiHttpClientName` by name
+  still runs.
 - **Built on AgentKit.Channels** (a package dependency now). Channels and Social both send Discord and Slack webhooks,
   and what they share now lives once, in Channels:
   - Discord: the webhook URL is read by `DiscordWebhookAddress` (the API base too), and the payload takes

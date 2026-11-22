@@ -28,8 +28,9 @@ public sealed record Email(string From, IReadOnlyList<string> To, string Subject
     public IReadOnlyDictionary<string, string>? Headers { get; init; }
 
     /// <summary>
-    /// Resend's <c>Idempotency-Key</c>: 1 to 256 visible ASCII characters, kept by Resend for 24 hours. A send with the key
-    /// of one already sent answers with that email's id and sends nothing; the same key with a different email is refused.
+    /// Resend's <c>Idempotency-Key</c>: 1 to 256 printable ASCII characters (no leading or trailing space), kept by Resend
+    /// for 24 hours. A send with the key of one already sent answers with that email's id and sends nothing; the same key
+    /// with a different email is refused.
     /// Give one to every email that may be sent again after a lost answer, e.g. <c>notification/12345</c>.
     /// </summary>
     public string? IdempotencyKey { get; init; }

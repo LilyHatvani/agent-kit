@@ -26,8 +26,8 @@ if (!result.Sent && result.Failure!.Kind == EmailFailureKind.Transient) { /* ret
   test fake implements the same interface and is kept when registered before `AddResendEmail`.
 - **One request per call.** No retry inside, no redirect followed. The JSON body is the same bytes for the same email
   (headers in ordinal order), so a retry under the same `IdempotencyKey` is the request Resend remembers for 24 hours:
-  it answers with the first email's id and sends nothing. The key is 1 to 256 visible ASCII characters; Resend
-  suggests `<event-type>/<entity-id>`.
+  it answers with the first email's id and sends nothing. The key is 1 to 256 printable ASCII characters, not
+  starting or ending with a space; Resend suggests `<event-type>/<entity-id>`.
 - **The result** is sent with Resend's id (the `email_id` its webhooks carry), or failed:
 
   | Kind | When | |
@@ -41,12 +41,16 @@ if (!result.Sent && result.Failure!.Kind == EmailFailureKind.Transient) { /* ret
   the earlier email may be out. Expected failures never throw; only the caller's own cancellation does.
 - **`ResendEmailSender.Problems(email)`** is what stops an email before it is sent: no sender, 0 or more than 50
   recipients, no body, a line break or control character in an address, a header name or value (a header injected
-  through one), a header given twice, a key out of shape. No caps of its own: everything else is Resend's to refuse.
+  through one), half of a surrogate pair anywhere (JSON would write U+FFFD), a header given twice, a key out of
+  shape. No caps of its own: everything else is Resend's to refuse.
 - **The key stays secret.** `AddResendEmail` refuses a key no header can carry, without repeating it. The client is
   registered with `.RemoveAllLoggers()`, every message has the key scrubbed, `ToString()` hides it, and an
   exception's own text is never used. Logs carry the kind and status only: Resend's messages can name a recipient.
 - The HttpClient (`MailDefaults.ResendHttpClientName`) connects through `AgentKit.Fetch`'s guard, port 443 only, with
-  a 64 KiB answer cap. Requests carry a `User-Agent` (`AgentKit.Mail/<version>`), which Resend requires.
+  a 64 KiB answer cap, and none of the host's `ConfigureHttpClientDefaults` handlers: a standard resilience handler
+  would retry a 503 three times, and one send must stay one request. A handler the host adds to this client by name
+  still runs (that is the host's choice). Requests carry a `User-Agent` (`AgentKit.Mail/<version>`), which Resend
+  requires.
 
 ## One-click unsubscribe
 

@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AgentKit.Social.Tests;
 
@@ -192,5 +193,31 @@ public sealed class RobustnessTests : IDisposable
         var third = await _host.Publisher.PostAsync(channel, Post());
         Assert.True(third.AlreadyPosted);
         Assert.Equal(1, statuses);
+    }
+
+    /// <summary>Retries a server error, as a host's ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler()) would.</summary>
+    private sealed class RetryingHandler : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = null!;
+            for (var i = 0; i < 4; i++)
+            {
+                response = await base.SendAsync(request, cancellationToken);
+                if ((int)response.StatusCode < 500) break;
+            }
+            return response;
+        }
+    }
+
+    [Fact]
+    public async Task A_hosts_default_handlers_never_reach_the_api_client_so_a_server_error_is_one_post()
+    {
+        using var host = new TestHost(s => s.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler(() => new RetryingHandler())));
+        host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.ServiceUnavailable, "");
+        var channel = host.Channels.Discord(new DiscordWebhook(new Uri("https://discord.com/api/webhooks/1/abcdefghijklmnop")));
+        var result = await channel.PostAsync(Post());
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.Single(host.Network.Seen);
     }
 }

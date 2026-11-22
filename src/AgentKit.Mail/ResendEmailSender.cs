@@ -54,6 +54,10 @@ public static class MailServiceCollectionExtensions
                 c.MaxResponseContentBufferSize = MailDefaults.MaxAnswerBytes;
             })
             .ConfigurePrimaryHttpMessageHandler(() => GuardedHttp.CreateHandler(new GuardedHttpOptions { Ports = [443] }))
+            // No handler from the host's ConfigureHttpClientDefaults (a standard resilience handler retries a 503 three
+            // times): one send is one request, and an email without a key would go out again. Applied after the
+            // defaults whatever the registration order; a handler the host adds to this client by name still runs.
+            .ConfigureAdditionalHttpMessageHandlers((handlers, _) => handlers.Clear())
             .RemoveAllLoggers();
         services.TryAddSingleton<IEmailSender>(sp => new ResendEmailSender(sp.GetRequiredService<IHttpClientFactory>(), apiKey,
             sp.GetRequiredService<TimeProvider>(), sp.GetService<ILoggerFactory>()));
@@ -107,7 +111,8 @@ public sealed class ResendEmailSender : IEmailSender
     /// <summary>
     /// What stops <paramref name="email"/> being sent as it is, each a sentence; empty when nothing does. Only what Resend
     /// would refuse or what can't be put on the wire unchanged: no line breaks in an address or a header (a header
-    /// injected through one), 1 to 50 recipients, a body, a key of 1 to 256 visible ASCII characters.
+    /// injected through one), no half of a surrogate pair anywhere (JSON would write it as U+FFFD), 1 to 50 recipients,
+    /// a body, a key of 1 to 256 printable ASCII characters that doesn't start or end with a space.
     /// </summary>
     public static IReadOnlyList<string> Problems(Email email)
     {
@@ -131,8 +136,15 @@ public sealed class ResendEmailSender : IEmailSender
             if (headers.Keys.Where(k => k is not null).GroupBy(k => k, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
                 problems.Add("A header is given twice (names differing only in case are one header).");
         }
-        if (email.IdempotencyKey is { } key && (key.Length is 0 or > MaxKey || !IsVisibleAscii(key)))
-            problems.Add($"The idempotency key must be 1 to {MaxKey} visible ASCII characters.");
+        string?[] texts = [email.From, .. to, .. replyTo, email.Subject, email.Text, email.Html,
+            .. email.Headers?.Keys ?? [], .. email.Headers?.Values ?? []];
+        if (texts.Any(t => t is not null && !IsWellFormed(t)))
+            problems.Add("A field has half of a surrogate pair, which isn't text and can't be sent as written.");
+        // Printable ASCII, a space inside allowed: HttpClient sends a header value as written except leading and trailing
+        // whitespace, which it drops, and a character past ASCII has no one encoding in a header.
+        if (email.IdempotencyKey is { } key
+            && (key.Length is 0 or > MaxKey || !key.All(c => c is >= ' ' and < (char)0x7F) || key[0] == ' ' || key[^1] == ' '))
+            problems.Add($"The idempotency key must be 1 to {MaxKey} printable ASCII characters, not starting or ending with a space.");
         return problems;
     }
 
@@ -193,7 +205,7 @@ public sealed class ResendEmailSender : IEmailSender
             using var response = await _http.CreateClient(MailDefaults.ResendHttpClientName).SendAsync(request, linked.Token).ConfigureAwait(false);
             // HttpClient buffered the answer already: reading it ignores a cancel that came after it arrived.
             var answer = await response.Content.ReadAsByteArrayAsync(CancellationToken.None).ConfigureAwait(false);
-            return Read(response, answer);
+            return Read(response, answer, keyed: email.IdempotencyKey is not null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -207,7 +219,7 @@ public sealed class ResendEmailSender : IEmailSender
         }
     }
 
-    private EmailResult Read(HttpResponseMessage response, byte[] answer)
+    private EmailResult Read(HttpResponseMessage response, byte[] answer, bool keyed)
     {
         var status = (int)response.StatusCode;
         var (id, name, message) = Parse(answer);
@@ -228,8 +240,9 @@ public sealed class ResendEmailSender : IEmailSender
                 Clean($"The idempotency key was used in the last 24 hours for a different email, which may have been sent ({status}){detail}"), status, MayHaveSent: true),
             // concurrent_idempotent_requests, or a 409 that doesn't say: another request with this key may be sending it.
             // Retrying under the same key can't send twice.
-            (409, _) => new EmailFailure(EmailFailureKind.Transient,
-                Clean($"Another request with this idempotency key is in progress ({status}){detail}"), status, MayHaveSent: true),
+            (409, _) => new EmailFailure(EmailFailureKind.Transient, Clean(keyed
+                ? $"Another request with this idempotency key is in progress ({status}){detail}"
+                : $"Resend answered with a conflict ({status}){detail}"), status, MayHaveSent: true),
             ( >= 500, _) => new EmailFailure(EmailFailureKind.Transient, Clean($"Resend had a server error ({status}){detail}"), status, MayHaveSent: true),
             (408 or 425, _) => new EmailFailure(EmailFailureKind.Transient, Clean($"Resend didn't take the request in time ({status}){detail}"), status),
             _ => new EmailFailure(EmailFailureKind.Rejected, Clean($"Resend refused the email ({status}){detail}"), status),
@@ -277,9 +290,11 @@ public sealed class ResendEmailSender : IEmailSender
             var root = doc.RootElement;
             return root.ValueKind == JsonValueKind.Object ? (Str(root, "id"), Str(root, "name"), Str(root, "message")) : (null, null, null);
         }
-        catch (JsonException)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
-            return (null, null, Encoding.UTF8.GetString(answer, 0, Math.Min(answer.Length, MaxMessage)));
+            // Not JSON, or a string in it that isn't UTF-8. The whole answer (at most MaxAnswerBytes) goes to Clean, which
+            // scrubs the key before it cuts: a cut first could leave the start of a key an echoing proxy wrote.
+            return (null, null, Encoding.UTF8.GetString(answer));
         }
     }
 
@@ -305,6 +320,22 @@ public sealed class ResendEmailSender : IEmailSender
     }
 
     private static bool HasControl(string s) => s.Any(char.IsControl);
+
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>Whether <paramref name="s"/> is whole UTF-16: every surrogate in a pair.</summary>
+    private static bool IsWellFormed(string s)
+    {
+        try
+        {
+            StrictUtf8.GetByteCount(s);
+            return true;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
+    }
 
     private static bool IsVisibleAscii(string s) => s.All(c => c is > ' ' and < (char)0x7F);
 

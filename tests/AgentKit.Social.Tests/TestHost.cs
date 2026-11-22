@@ -167,11 +167,12 @@ public sealed class TestHost : IDisposable
 
     private readonly ServiceProvider _services;
 
-    public TestHost()
+    public TestHost(Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddProvider(Logs).SetMinimumLevel(LogLevel.Trace));
         services.AddSingleton<TimeProvider>(Clock);
+        configure?.Invoke(services);
         services.AddSocialChannels();
         // Replace the primary handlers (the guarded ones) with the fakes, as a product's tests do.
         services.AddHttpClient(SocialDefaults.ApiHttpClientName).ConfigurePrimaryHttpMessageHandler(() => Network);

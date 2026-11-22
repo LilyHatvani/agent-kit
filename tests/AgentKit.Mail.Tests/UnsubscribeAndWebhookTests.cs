@@ -231,6 +231,13 @@ public sealed class WebhookTests
     }
 
     [Fact]
+    public void A_body_that_isnt_UTF_8_is_null_never_a_throw()
+    {
+        byte[] body = [.. "{\"type\":\"email.bounced\",\"data\":{\"email_id\":\""u8.ToArray(), 0xFF, 0xFE, .. "\"}}"u8.ToArray()];
+        Assert.Null(ResendWebhooks.Parse(body));
+    }
+
+    [Fact]
     public void Fields_of_the_wrong_kind_read_as_absent_and_data_outlives_the_body()
     {
         var body = Encoding.UTF8.GetBytes("""{"type":"email.bounced","created_at":5,"data":{"email_id":1,"to":[1,"a@example.com",null],"bounce":"Permanent"}}""");

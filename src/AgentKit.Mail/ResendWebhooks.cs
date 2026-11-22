@@ -122,11 +122,13 @@ public static class ResendWebhooks
     }
 
     /// <summary>
-    /// Reads a verified body into an event, or null when it isn't one (not JSON, not an object, no string <c>type</c>).
-    /// Fields of the wrong JSON kind read as absent, never a throw.
+    /// Reads a verified body into an event, or null when it isn't one (not UTF-8, not JSON, not an object, no string
+    /// <c>type</c>). Fields of the wrong JSON kind read as absent, never a throw.
     /// </summary>
     public static ResendWebhookEvent? Parse(ReadOnlySpan<byte> body)
     {
+        // JsonDocument checks a string's UTF-8 only when the string is read, and GetString then throws: refuse it whole.
+        if (!System.Text.Unicode.Utf8.IsValid(body)) return null;
         JsonDocument doc;
         try
         {

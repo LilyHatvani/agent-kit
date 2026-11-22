@@ -28,6 +28,9 @@ public static class SocialServiceCollectionExtensions
                 c.MaxResponseContentBufferSize = SocialDefaults.MaxAnswerBytes;
             })
             .ConfigurePrimaryHttpMessageHandler(() => GuardedHttp.CreateHandler(new GuardedHttpOptions { Ports = [443] }))
+            // No handler from the host's ConfigureHttpClientDefaults (a standard resilience handler retries a 5xx): a
+            // retried post on a network without an idempotency key is a second post. The ledger decides retries.
+            .ConfigureAdditionalHttpMessageHandlers((handlers, _) => handlers.Clear())
             .RemoveAllLoggers();
         services.AddHttpClient(SocialDefaults.MediaHttpClientName, c => c.Timeout = TimeSpan.FromSeconds(20))
             .ConfigurePrimaryHttpMessageHandler(() => GuardedHttp.CreateHandler(new GuardedHttpOptions { Ports = [80, 443], FollowRedirects = true }))
