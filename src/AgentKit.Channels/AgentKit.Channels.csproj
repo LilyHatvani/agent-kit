@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.Channels</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.Channels</PackageId>
+    <Description>Outgoing messages to the places people read, without a vendor SDK: Discord and Slack webhooks, ntfy, and signed outgoing webhooks (Standard Webhooks). One message shape, a request per destination with agent-written text escaped for it, a check of each destination's address, and one reading of the answer: sent, retry after, gone, or failed, with a retry schedule. The host keeps its tables, its queue and when to send.</Description>
+    <PackageTags>notifications;webhooks;discord;slack;ntfy;standard-webhooks</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

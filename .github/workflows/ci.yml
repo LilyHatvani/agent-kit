@@ -47,6 +47,7 @@ jobs:
       - run: dotnet test --project tests/AgentKit.Push.Tests -c Release --no-build
       - run: dotnet test --project tests/AgentKit.Fetch.Tests -c Release --no-build
       - run: dotnet test --project tests/AgentKit.Social.Tests -c Release --no-build
+      - run: dotnet test --project tests/AgentKit.Channels.Tests -c Release --no-build
       # Packing on every run surfaces packaging errors before any publish key exists.
       - run: dotnet pack AgentKit.slnx -c Release --no-build -o artifacts
       - uses: actions/upload-artifact@v4

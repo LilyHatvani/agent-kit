@@ -6,6 +6,7 @@
     <Project Path="src/AgentKit.Push/AgentKit.Push.csproj" />
     <Project Path="src/AgentKit.Fetch/AgentKit.Fetch.csproj" />
     <Project Path="src/AgentKit.Social/AgentKit.Social.csproj" />
+    <Project Path="src/AgentKit.Channels/AgentKit.Channels.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentKit.McpOAuth.Tests/AgentKit.McpOAuth.Tests.csproj" />
@@ -14,5 +15,6 @@
     <Project Path="tests/AgentKit.Push.Tests/AgentKit.Push.Tests.csproj" />
     <Project Path="tests/AgentKit.Fetch.Tests/AgentKit.Fetch.Tests.csproj" />
     <Project Path="tests/AgentKit.Social.Tests/AgentKit.Social.Tests.csproj" />
+    <Project Path="tests/AgentKit.Channels.Tests/AgentKit.Channels.Tests.csproj" />
   </Folder>
 </Solution>
