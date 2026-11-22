@@ -76,6 +76,10 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
   - `SendOutcome.Classify(status)`, `SendOutcome.RetryAfterOf(response, now, max)` and `SendOutcome.Bounded(wait, max)`.
   - `Discord.Request` and `Slack.Request` still post to the URL they are given.
 - **Fixed:**
+  - `StandardWebhooks.Verify` threw `ArgumentOutOfRangeException` on a `webhook-timestamp` past the year 9999
+    (`99999999999999`): it built a `DateTimeOffset` from it. The timestamp is compared as seconds now, so such a
+    delivery is stale and refused. New, for receivers: `StandardWebhooks.IsFresh(timestamp, now)` (the same check on its
+    own) and `StandardWebhooks.SecretRefusal(secret)` (check a secret at startup instead of on the first delivery).
   - A `Retry-After` of `NaN`, `Infinity` or `1e300` made `SendOutcome.ReadAsync` throw (it reached
     `TimeSpan.FromSeconds`). Only whole seconds, seconds with a fraction or a date are read now; anything else is no
     header, so a 429 waits the default minute. That covers a negative value too, which used to mean "send again now".

@@ -27,8 +27,9 @@ Outgoing messages to the places people read, without a vendor SDK. Written for A
   too) and nothing else: a sign, an exponent, `NaN` or words is no header, never a throw and never a wait that beats a
   caller's better source. `SendOutcome.Bounded(wait, max)` keeps a wait between none and a cap.
 - **One retry schedule**, `Retries.Next(attemptsMade, retryAfter)`: 1 m, 5 m, 30 m, 2 h, 12 h, then dead.
-- **Receivers' side** for tests: `StandardWebhooks.Verify` (tolerance 5 minutes, constant-time compare, several
-  signatures).
+- **Receivers' side**: `StandardWebhooks.Verify` (tolerance 5 minutes, constant-time compare, several
+  signatures), `IsFresh` (the timestamp check alone) and `SecretRefusal` (a secret checked at startup). AgentKit.Mail
+  verifies Resend's delivery webhooks with them.
 
 Send through a guarded client (`AgentKit.Fetch`): every one of these addresses is one someone typed in. **A Discord or
 Slack webhook's path is its token**, so register that client with `.RemoveAllLoggers()`: HttpClient's default request
