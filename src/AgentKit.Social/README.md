@@ -66,7 +66,7 @@ the same set again skips the channels that are up and resumes or retries the res
 
 | Network | How | Per post | Each picture | Animated GIF | Alt text |
 | --- | --- | --- | --- | --- | --- |
-| Bluesky | `uploadBlob`, then an `app.bsky.embed.images` embed | 4 | 2,000,000 bytes | posted, with a note that it shows still (from recall: not stated in the lexicon) | required by the lexicon |
+| Bluesky | `uploadBlob`, then an `app.bsky.embed.images` embed (with `aspectRatio` when `SocialImage.Width` and `Height` are given) | 4 | 2,000,000 bytes | posted, with a note that it shows still (from recall: not stated in the lexicon) | required by the lexicon |
 | Mastodon | `POST /api/v2/media` (polls `GET /api/v1/media/:id` while it answers 206), then `media_ids[]` | `MaxMediaAttachments` (4) | `ImageSizeLimit` (16 MiB) | becomes a gifv, beside pictures too, up to `VideoSizeLimit` (99 MiB) | 1500 |
 | X | `POST /2/media/upload` (`tweet_image` or `tweet_gif`, polls the STATUS command while processing), `POST /2/media/metadata`, then `media.media_ids` | 4 | 5,000,000 bytes | alone, up to 15,000,000 bytes | 1000 |
 | Discord | files on the message itself (`files[n]`, `attachments[]`), with `SUPPRESS_EMBEDS` so the link doesn't unfurl into a card | 10 | 20 MiB, 25 MiB a message | plays among other pictures | 1024 |
@@ -179,6 +179,20 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
   and `AgentKit.Social.Media` for a card picture by address (public addresses on 80 and 443, up to three redirects).
   Both go through `AgentKit.Fetch`'s connect-time guard, since a Mastodon instance, a PDS and a picture URL are
   addresses someone typed. `SocialChannels` is made only by `AddSocialChannels`, on these clients.
+- **Resource bounds, not usage limits.** The package sets no caps of its own on how much or how often anyone posts:
+  what it refuses is what the network refuses (characters, picture count, size and format), with the network's
+  reason. What it does bound is the machine's resources, sized to the networks' own caps:
+  - each call has a deadline on the host's `TimeProvider`: `SocialDefaults.CallTimeout` (30 s) for an answer, and
+    `UploadTimeout(bytes)` for an upload (30 s plus the bytes at 128 KiB/s, so X's 15 MB GIF gets about two and a half
+    minutes and a 25 MiB Discord message about four);
+  - the follow-up after a post is up (a crosspost, a lookup, a cleanup) has its own `AfterPostTimeout` (10 s) and never
+    turns a post that is up into a failure;
+  - an API answer over `MaxAnswerBytes` (1 MiB) is a transport failure, never buffered;
+  - waiting for an upload to process is `MediaPollInterval` × `MediaPollAttempts`; a negative value is refused when the
+    channel is made.
+- **A transport failure on an upload** (a reset, a timeout) is a failure that posted nothing (`MayHavePosted` false),
+  handled like a refused picture: Mastodon deletes what was already uploaded, and a retry starts afresh. On X, an alt
+  text whose call breaks costs the description only, as a refused one does.
 - **Logs.** Neither client writes HttpClient's request logs: a Discord webhook's path is its token. One Information line
   per post (`Posted to <channel id>: <post id>`) and one Warning per failure, with the category and the scrubbed message.
 - **Traces.** HttpClient's own trace spans (`System.Net.Http`, read by OpenTelemetry's HttpClient instrumentation or

@@ -19,6 +19,21 @@ public static class SocialDefaults
 
     /// <summary>The HttpClient that fetches a card picture: public addresses on ports 80 and 443, up to three redirects, no logging.</summary>
     public const string MediaHttpClientName = "AgentKit.Social.Media";
+
+    /// <summary>The most an API answer may be (1 MiB); a larger one is a transport failure, never buffered.</summary>
+    public const int MaxAnswerBytes = 1024 * 1024;
+
+    /// <summary>How long a call without an upload may take: an answer, not a transfer.</summary>
+    public static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long the follow-up after a post is up (a crosspost, a lookup, a cleanup) may take before it is let go.</summary>
+    public static readonly TimeSpan AfterPostTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How long an upload may take: <see cref="CallTimeout"/> plus the bytes at 128 KiB/s, an ordinary slow uplink (a
+    /// 15 MB GIF gets about two and a half minutes, a 25 MiB Discord message about four).
+    /// </summary>
+    public static TimeSpan UploadTimeout(long bytes) => CallTimeout + TimeSpan.FromSeconds(Math.Max(0, bytes) / (128.0 * 1024));
 }
 
 internal sealed record SocialChannelContext(IHttpClientFactory Http, TimeProvider Clock, ILoggerFactory Logs, BlueskySessions Sessions);

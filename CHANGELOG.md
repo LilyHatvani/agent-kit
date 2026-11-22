@@ -18,6 +18,8 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
   and the failure says what became of the ones already uploaded (Mastodon's are deleted).
 - `ISocialPostLedger.SaveAsync` is conditional (same attempt, still pending), so a late refusal from one caller never
   overwrites a post another caller landed.
+- No usage limits of its own: only what the network refuses. Resource bounds sized to the networks' caps: a deadline
+  per call on the host's clock (uploads get time for their bytes), a 1 MiB cap on an answer, bounded media polling.
 - `SocialPublisher.PostEachAsync(postKey, deliveries)` posts one item to a set of channels at once and answers per
   channel; each key is `KeyFor(postKey, channelKey)`, so a rerun of the set skips what is up.
 - `Compose` gives the text as sent, its length as the network counts it and what stops it; a post that doesn't fit is

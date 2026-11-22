@@ -38,7 +38,22 @@ internal abstract class ChannelBase : ISocialChannel
 
     protected ILogger Log { get; }
 
-    protected HttpClient Api => Context.Http.CreateClient(SocialDefaults.ApiHttpClientName);
+    private HttpClient Api => Context.Http.CreateClient(SocialDefaults.ApiHttpClientName);
+
+    /// <summary>
+    /// One API call under its own deadline (<see cref="SocialDefaults.CallTimeout"/>, or <paramref name="timeout"/> for an
+    /// upload) on the clock the host gave. The deadline running out is a timeout (a <see cref="TaskCanceledException"/>
+    /// while the caller's token is not cancelled), mapped like any other. A resource bound, not a usage limit.
+    /// </summary>
+    protected async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct, TimeSpan? timeout = null)
+    {
+        using var deadline = new CancellationTokenSource(timeout ?? SocialDefaults.CallTimeout, Context.Clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        return await Api.SendAsync(request, linked.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>A token for the follow-up once a post is up: its own deadline, never the caller's, so a late cancel can't lose the answer.</summary>
+    protected CancellationTokenSource AfterPost() => new(SocialDefaults.AfterPostTimeout, Context.Clock);
 
     protected DateTimeOffset Now => Context.Clock.GetUtcNow();
 

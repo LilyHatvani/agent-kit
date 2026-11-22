@@ -13,6 +13,19 @@ internal enum AnimatedGifRule
 /// <summary>A network's limits on pictures in one post.</summary>
 internal sealed record MediaRules(int MaxCount, long MaxBytes, int MaxAlt, AnimatedGifRule AnimatedGif, long MaxAnimatedGifBytes, long? MaxTotalBytes = null);
 
+/// <summary>The bounds on waiting for a network to process an upload: resource bounds, not usage limits.</summary>
+internal static class MediaPolling
+{
+    /// <summary>Refuses a negative interval (−1 ms would mean "forever") and a negative number of checks.</summary>
+    public static void Validate(TimeSpan interval, int attempts, string paramName)
+    {
+        if (interval < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(paramName, interval, "MediaPollInterval can't be negative.");
+        if (attempts < 0)
+            throw new ArgumentOutOfRangeException(paramName, attempts, "MediaPollAttempts can't be negative.");
+    }
+}
+
 internal static class Media
 {
     /// <summary>

@@ -41,6 +41,7 @@ internal sealed partial class XChannel : ChannelBase
         : base(context, [account.AccessToken, account.ApiKey, account.ApiKeySecret, account.AccessTokenSecret, .. moreSecrets ?? []])
     {
         _account = account;
+        MediaPolling.Validate(account.MediaPollInterval, account.MediaPollAttempts, nameof(account));
     }
 
     public override string Network => SocialNetworks.X;
@@ -74,7 +75,17 @@ internal sealed partial class XChannel : ChannelBase
         var mediaIds = new JsonArray();
         for (var i = 0; i < post.Images.Count; i++)
         {
-            var (mediaId, failure) = await UploadAsync(post.Images[i], i + 1, notes, ct).ConfigureAwait(false);
+            string? mediaId;
+            SocialFailure? failure;
+            try
+            {
+                (mediaId, failure) = await UploadAsync(post.Images[i], i + 1, notes, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // A transport failure on an upload: the post itself was never sent, so a retry starts afresh.
+                (mediaId, failure) = (null, FromException(e));
+            }
             if (mediaId is not null)
             {
                 mediaIds.Add(mediaId);
@@ -92,7 +103,7 @@ internal sealed partial class XChannel : ChannelBase
         if (mediaIds.Count > 0) body["media"] = new JsonObject { ["media_ids"] = mediaIds };
         using var request = new HttpRequestMessage(HttpMethod.Post, PostEndpoint) { Content = JsonContent.Create(body) };
         Authorize(request);
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response)) return SocialPostResult.Failed(Failure(response, doc));
         if (doc is null || Prop(doc.RootElement, "data") is not { } data || Str(data, "id") is not { } id)
@@ -112,7 +123,7 @@ internal sealed partial class XChannel : ChannelBase
         form.Add(new StringContent(category), "media_category");
         using var request = new HttpRequestMessage(HttpMethod.Post, UploadEndpoint) { Content = form };
         Authorize(request);
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct, SocialDefaults.UploadTimeout(image.Bytes.Length)).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response)) return (null, Failure(response, doc) with { MayHavePosted = false });
         // The spec's media id is 1 to 19 digits; anything else can't go into media_ids.
@@ -127,7 +138,7 @@ internal sealed partial class XChannel : ChannelBase
             await Task.Delay(_account.MediaPollInterval, ct).ConfigureAwait(false);
             using var check = new HttpRequestMessage(HttpMethod.Get, $"{UploadEndpoint}?command=STATUS&media_id={Uri.EscapeDataString(id)}");
             Authorize(check);
-            using var checkResponse = await Api.SendAsync(check, ct).ConfigureAwait(false);
+            using var checkResponse = await SendAsync(check, ct).ConfigureAwait(false);
             using var checkDoc = await ReadJsonAsync(checkResponse, ct).ConfigureAwait(false);
             if (!IsSuccess(checkResponse)) return (null, Failure(checkResponse, checkDoc) with { MayHavePosted = false });
             state = checkDoc is not null && Prop(checkDoc.RootElement, "data") is { } d && Prop(d, "processing_info") is { } i ? Str(i, "state") : "succeeded";
@@ -143,13 +154,20 @@ internal sealed partial class XChannel : ChannelBase
             }),
         };
         Authorize(alt);
-        using var altResponse = await Api.SendAsync(alt, ct).ConfigureAwait(false);
-        if (!IsSuccess(altResponse))
+        // The picture is up: a refused or unanswered description costs the description, not the picture (as Echo of
+        // Dreams' announcement poster does), and the result says so.
+        try
         {
-            // The picture is up: a refused description costs the description, not the picture (as Echo of Dreams'
-            // announcement poster does), and the result says so.
-            using var altDoc = await ReadJsonAsync(altResponse, ct).ConfigureAwait(false);
-            notes.Add(Invariant($"Picture {number} went without its alt text: {Failure(altResponse, altDoc).Message}"));
+            using var altResponse = await SendAsync(alt, ct).ConfigureAwait(false);
+            if (!IsSuccess(altResponse))
+            {
+                using var altDoc = await ReadJsonAsync(altResponse, ct).ConfigureAwait(false);
+                notes.Add(Invariant($"Picture {number} went without its alt text: {Failure(altResponse, altDoc).Message}"));
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            notes.Add(Invariant($"Picture {number} went without its alt text: {FromException(e).Message}"));
         }
         return (id, null);
     }
@@ -176,7 +194,7 @@ internal sealed partial class XChannel : ChannelBase
     {
         try
         {
-            using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             if (!IsSuccess(response))
             {

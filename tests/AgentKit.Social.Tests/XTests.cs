@@ -226,4 +226,65 @@ public sealed class XTests : IDisposable
         Assert.Contains("goes alone", Assert.Single(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Problems), StringComparison.Ordinal);
         Assert.Contains("1000", Assert.Single(channel.Compose(Post() with { Images = [Picture(1) with { Alt = new string('a', 1001) }] }).Problems), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task An_upload_that_breaks_in_transport_leaves_no_unconfirmed_attempt_so_the_next_call_uploads_again()
+    {
+        _host.Network.Respond = r => XWithMedia(r);
+        var broke = false;
+        _host.Network.Fail = r => r.Uri.AbsolutePath == "/2/media/upload" && !broke && (broke = true) ? new TaskCanceledException("timeout") : null;
+        var first = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+        Assert.Equal(SocialFailureKind.Transient, first.Failure!.Kind);
+        Assert.False(first.Failure.MayHavePosted);
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+
+        var second = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+        Assert.True(second.Posted, second.Failure?.Message);
+        Assert.Equal(2, _host.Network.Seen.Count(s => s.Uri.AbsolutePath == "/2/media/upload"));
+        Assert.Single(_host.Network.Seen, s => s.Uri.AbsolutePath == "/2/tweets");
+    }
+
+    [Fact]
+    public async Task Alt_text_that_breaks_in_transport_costs_the_description_not_the_picture()
+    {
+        _host.Network.Respond = r => XWithMedia(r);
+        _host.Network.Fail = r => r.Uri.AbsolutePath == "/2/media/metadata" ? new HttpRequestException("connection reset") : null;
+        var result = await Channel().PostAsync(Post() with { Images = [Picture(1)] });
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Contains("went without its alt text", Assert.Single(result.Notes), StringComparison.Ordinal);
+        Assert.Equal(["91"], _host.Network.Seen[^1].Json.GetProperty("media").GetProperty("media_ids").EnumerateArray().Select(m => m.GetString()));
+    }
+
+    [Fact]
+    public async Task A_gif_still_processing_after_the_checks_posts_nothing()
+    {
+        _host.Network.Respond = r => r.Method == HttpMethod.Get
+            ? FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = "91", processing_info = new { state = "in_progress", progress_percent = 50 } } })
+            : XWithMedia(r, uploadState: _ => "pending");
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        var account = new XAccount(AccessToken) { MediaPollInterval = TimeSpan.FromMilliseconds(1), MediaPollAttempts = 2 };
+        var result = await _host.Channels.X(account).PostAsync(Post() with { Images = [gif] });
+
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.Contains("still processing it after 2 checks", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Equal(2, _host.Network.Seen.Count(s => s.Method == HttpMethod.Get));
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/2/tweets");
+    }
+
+    [Fact]
+    public void A_negative_poll_interval_or_count_is_refused()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => _host.Channels.X(new XAccount(AccessToken) { MediaPollInterval = Timeout.InfiniteTimeSpan }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _host.Channels.X(new XAccount(AccessToken) { MediaPollAttempts = -1 }));
+    }
+
+    [Fact]
+    public void An_upload_deadline_grows_with_the_bytes_to_the_network_caps()
+    {
+        Assert.Equal(SocialDefaults.CallTimeout, SocialDefaults.UploadTimeout(0));
+        Assert.True(SocialDefaults.UploadTimeout(15_000_000) > TimeSpan.FromMinutes(2));          // X's animated GIF cap
+        Assert.True(SocialDefaults.UploadTimeout(25 * 1024 * 1024) > TimeSpan.FromMinutes(3));    // Discord's request cap
+    }
 }

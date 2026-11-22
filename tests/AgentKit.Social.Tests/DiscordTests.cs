@@ -256,6 +256,21 @@ public sealed class DiscordTests : IDisposable
     }
 
     [Fact]
+    public async Task The_multipart_payload_pings_nobody_and_suppresses_the_link_card()
+    {
+        var post = Post() with { Text = "Hey @everyone and <@&123>, new pictures", Images = [Picture(1)] };
+        await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(post);
+        var text = _host.Network.Seen[0].Text;
+        var start = text.IndexOf("name=payload_json", StringComparison.Ordinal);
+        var bodyStart = text.IndexOf("\r\n\r\n", start, StringComparison.Ordinal) + 4;
+        var bodyEnd = text.IndexOf("\r\n--", bodyStart, StringComparison.Ordinal);
+        using var payload = System.Text.Json.JsonDocument.Parse(text[bodyStart..bodyEnd]);
+        Assert.Equal(0, payload.RootElement.GetProperty("allowed_mentions").GetProperty("parse").GetArrayLength());
+        Assert.Equal(4, payload.RootElement.GetProperty("flags").GetInt32());
+        Assert.Contains("@everyone", payload.RootElement.GetProperty("content").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_cancel_after_the_message_is_up_still_records_it_as_posted()
     {
         using var cts = new CancellationTokenSource();

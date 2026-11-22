@@ -89,17 +89,30 @@ internal sealed class BlueskyChannel : ChannelBase
         for (var i = 0; i < post.Images.Count; i++)
         {
             var picture = post.Images[i];
-            var (uploaded, uploadFailure) = await XrpcAsync(s =>
+            JsonDocument? uploaded;
+            SocialFailure? uploadFailure;
+            try
             {
-                var r = new HttpRequestMessage(HttpMethod.Post, Xrpc("com.atproto.repo.uploadBlob")) { Content = new ReadOnlyMemoryContent(picture.Bytes) };
-                r.Content.Headers.ContentType = new MediaTypeHeaderValue(NormalType(picture));
-                return r;
-            }, ct).ConfigureAwait(false);
+                (uploaded, uploadFailure) = await XrpcAsync(s =>
+                {
+                    var r = new HttpRequestMessage(HttpMethod.Post, Xrpc("com.atproto.repo.uploadBlob")) { Content = new ReadOnlyMemoryContent(picture.Bytes) };
+                    r.Content.Headers.ContentType = new MediaTypeHeaderValue(NormalType(picture));
+                    return r;
+                }, ct, timeout: SocialDefaults.UploadTimeout(picture.Bytes.Length)).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // A transport failure on an upload: the post itself was never sent.
+                (uploaded, uploadFailure) = (null, FromException(e));
+            }
             using (uploaded)
             {
                 if (uploaded is not null && Prop(uploaded.RootElement, "blob") is { ValueKind: JsonValueKind.Object } blob)
                 {
-                    images.Add(new JsonObject { ["alt"] = picture.Alt, ["image"] = JsonNode.Parse(blob.GetRawText()) });
+                    var entry = new JsonObject { ["alt"] = picture.Alt, ["image"] = JsonNode.Parse(blob.GetRawText()) };
+                    if (picture.Width is > 0 and var w && picture.Height is > 0 and var h)
+                        entry["aspectRatio"] = new JsonObject { ["width"] = w, ["height"] = h };
+                    images.Add(entry);
                     if (NormalType(picture) == "image/gif" && Media.IsAnimatedGif(picture.Bytes.Span))
                         notes.Add(Invariant($"Picture {i + 1} is an animated GIF; Bluesky shows a picture in a post as a still, so it doesn't move."));
                     continue;
@@ -242,7 +255,7 @@ internal sealed class BlueskyChannel : ChannelBase
     /// expired. Returns the answer's JSON, or a failure mapped from XRPC's <c>{ error, message }</c>.
     /// </summary>
     private async Task<(JsonDocument? Doc, SocialFailure? Failure)> XrpcAsync(Func<BlueskySession, HttpRequestMessage> make, CancellationToken ct,
-        bool notFoundIsAnswer = false)
+        bool notFoundIsAnswer = false, TimeSpan? timeout = null)
     {
         for (var round = 0; ; round++)
         {
@@ -250,7 +263,7 @@ internal sealed class BlueskyChannel : ChannelBase
             if (session is null) return (null, signInFailure);
             using var request = make(session);
             request.Headers.Authorization = Bearer(session.AccessJwt);
-            using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct, timeout).ConfigureAwait(false);
             var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             if (IsSuccess(response)) return (doc, null);
             var error = doc is null ? null : Str(doc.RootElement, "error");
@@ -278,7 +291,7 @@ internal sealed class BlueskyChannel : ChannelBase
         {
             Content = JsonContent.Create(new JsonObject { ["identifier"] = _account.Identifier, ["password"] = _account.AppPassword }),
         };
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response))
         {

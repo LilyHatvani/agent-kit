@@ -20,7 +20,13 @@ public static class SocialServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         // No request logging on either client: a Discord webhook's path is its token, and the default HttpClient logs
         // write the request URI.
-        services.AddHttpClient(SocialDefaults.ApiHttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30))
+        // No client-wide timeout: each call carries its own deadline (ChannelBase.SendAsync), sized to what it uploads.
+        // The answer is capped: a hostile instance or PDS can't make the host buffer a huge body.
+        services.AddHttpClient(SocialDefaults.ApiHttpClientName, c =>
+            {
+                c.Timeout = Timeout.InfiniteTimeSpan;
+                c.MaxResponseContentBufferSize = SocialDefaults.MaxAnswerBytes;
+            })
             .ConfigurePrimaryHttpMessageHandler(() => GuardedHttp.CreateHandler(new GuardedHttpOptions { Ports = [443] }))
             .RemoveAllLoggers();
         services.AddHttpClient(SocialDefaults.MediaHttpClientName, c => c.Timeout = TimeSpan.FromSeconds(20))

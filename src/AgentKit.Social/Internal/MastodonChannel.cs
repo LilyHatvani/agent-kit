@@ -37,6 +37,7 @@ internal sealed class MastodonChannel : ChannelBase
             throw new ArgumentException($"The Mastodon instance address is refused: {refusal}", nameof(account));
         if (account.MaxCharacters < 1 || account.CharactersReservedPerUrl < 0)
             throw new ArgumentException("The Mastodon limits must be positive.", nameof(account));
+        MediaPolling.Validate(account.MediaPollInterval, account.MediaPollAttempts, nameof(account));
         _instance = new Uri(account.Instance.GetLeftPart(UriPartial.Authority));
     }
 
@@ -71,7 +72,18 @@ internal sealed class MastodonChannel : ChannelBase
         var uploaded = new List<string>();
         for (var i = 0; i < post.Images.Count; i++)
         {
-            var (mediaId, uploadFailure) = await UploadAsync(post.Images[i], uploaded, ct).ConfigureAwait(false);
+            string? mediaId;
+            SocialFailure? uploadFailure;
+            try
+            {
+                (mediaId, uploadFailure) = await UploadAsync(post.Images[i], uploaded, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // A transport failure on an upload: the status itself was never sent. (An upload whose answer was lost
+                // may exist on the instance unknown to us; it stays unattached.)
+                (mediaId, uploadFailure) = (null, FromException(e));
+            }
             if (mediaId is not null)
             {
                 uploaded.Add(mediaId);
@@ -97,7 +109,7 @@ internal sealed class MastodonChannel : ChannelBase
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(_instance, "/api/v1/statuses")) { Content = new FormUrlEncodedContent(fields) };
         request.Headers.Authorization = Bearer(_account.AccessToken);
         request.Headers.Add("Idempotency-Key", attempt.Token);
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response))
         {
@@ -122,7 +134,7 @@ internal sealed class MastodonChannel : ChannelBase
                 ? media.EnumerateArray().Select(m => Str(m, "id")).OfType<string>().ToHashSet(StringComparer.Ordinal)
                 : [];
             // The status is up: the cleanup runs on its own deadline, so a late cancel can't lose that answer.
-            using var after = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var after = AfterPost();
             await DeleteAsync([.. uploaded.Where(m => !attached.Contains(m))], after.Token).ConfigureAwait(false);
         }
         var url = Str(doc.RootElement, "url") is { } u && Uri.TryCreate(u, UriKind.Absolute, out var parsed) ? parsed : null;
@@ -143,7 +155,7 @@ internal sealed class MastodonChannel : ChannelBase
         form.Add(new StringContent(image.Alt), "description");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(_instance, "/api/v2/media")) { Content = form };
         request.Headers.Authorization = Bearer(_account.AccessToken);
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct, SocialDefaults.UploadTimeout(image.Bytes.Length)).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response)) return (null, Failure(response, doc) with { MayHavePosted = false });
         if (doc is null || Str(doc.RootElement, "id") is not { } id)
@@ -155,7 +167,7 @@ internal sealed class MastodonChannel : ChannelBase
             await Task.Delay(_account.MediaPollInterval, ct).ConfigureAwait(false);
             using var check = new HttpRequestMessage(HttpMethod.Get, new Uri(_instance, "/api/v1/media/" + Uri.EscapeDataString(id)));
             check.Headers.Authorization = Bearer(_account.AccessToken);
-            using var state = await Api.SendAsync(check, ct).ConfigureAwait(false);
+            using var state = await SendAsync(check, ct).ConfigureAwait(false);
             if (state.StatusCode == HttpStatusCode.OK) return (id, null);
             if (state.StatusCode == HttpStatusCode.PartialContent) continue;
             using var stateDoc = await ReadJsonAsync(state, ct).ConfigureAwait(false);
@@ -182,10 +194,12 @@ internal sealed class MastodonChannel : ChannelBase
             {
                 using var request = new HttpRequestMessage(HttpMethod.Delete, new Uri(_instance, "/api/v1/media/" + Uri.EscapeDataString(id)));
                 request.Headers.Authorization = Bearer(_account.AccessToken);
-                using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+                using var response = await SendAsync(request, ct).ConfigureAwait(false);
                 if (!IsSuccess(response)) left++;
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            // A cleanup is best effort and never throws: its own deadline running out, or the caller giving up during it,
+            // leaves the picture unattached and counted, never a failure of a post that may be up.
+            catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
             {
                 left++;
             }

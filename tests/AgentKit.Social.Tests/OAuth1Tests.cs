@@ -90,4 +90,44 @@ public sealed class OAuth1Tests : IDisposable
         }
         Assert.Equal("X OAuth 1.0a (keys hidden)", account.ToString());
     }
+
+    [Fact]
+    public async Task The_status_check_signs_its_query_and_the_upload_doesnt_sign_its_multipart_fields()
+    {
+        _host.Network.Respond = r => (r.Method.Method, r.Uri.AbsolutePath) switch
+        {
+            ("POST", "/2/media/upload") => FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = "91", processing_info = new { state = "pending" } } }),
+            ("GET", "/2/media/upload") => FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = "91", processing_info = new { state = "succeeded" } } }),
+            ("POST", "/2/media/metadata") => FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = "91" } }),
+            _ => FakeNetwork.Json(HttpStatusCode.Created, new { data = new { id = "1" } }),
+        };
+        var account = new XAccount("api-key-0001", "api-key-secret-0001", "access-token-0001", "access-token-secret-0001")
+        {
+            MediaPollInterval = TimeSpan.FromMilliseconds(1),
+        };
+        var credentials = new OAuth1Signer.Credentials("api-key-0001", "api-key-secret-0001", "access-token-0001", "access-token-secret-0001");
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        Assert.True((await _host.Channels.X(account).PostAsync(new SocialPost { Text = "Hi", Images = [gif], IdempotencyKey = "k" })).Posted);
+
+        // Recompute each signature from the request as sent: the oauth_* fields from its header, the query from its
+        // URL, and no body parameter at all.
+        string Recomputed(SeenRequest r)
+        {
+            var fields = ParseHeader(r.Header("Authorization")!);
+            var oauth = fields.Where(f => f.Key != "oauth_signature").Select(f => new KeyValuePair<string, string>(f.Key, f.Value));
+            return OAuth1Signer.Signature(r.Method, r.Uri, oauth, credentials);
+        }
+        var upload = _host.Network.Seen.Single(s => s.Method == HttpMethod.Post && s.Uri.AbsolutePath == "/2/media/upload");
+        Assert.Contains("tweet_gif", upload.Text, StringComparison.Ordinal);
+        Assert.Equal(ParseHeader(upload.Header("Authorization")!)["oauth_signature"], Recomputed(upload));
+        var status = _host.Network.Seen.Single(s => s.Method == HttpMethod.Get);
+        Assert.Equal("?command=STATUS&media_id=91", status.Uri.Query);
+        Assert.Equal(ParseHeader(status.Header("Authorization")!)["oauth_signature"], Recomputed(status));
+
+        // And signing the multipart field would have given another signature: the check above can tell.
+        var withField = OAuth1Signer.Signature(upload.Method, upload.Uri,
+            ParseHeader(upload.Header("Authorization")!).Where(f => f.Key != "oauth_signature").Select(f => new KeyValuePair<string, string>(f.Key, f.Value))
+                .Append(new("media_category", "tweet_gif")), credentials);
+        Assert.NotEqual(ParseHeader(upload.Header("Authorization")!)["oauth_signature"], withField);
+    }
 }

@@ -177,7 +177,7 @@ internal sealed class DiscordChannel : ChannelBase
             request.Content = JsonContent.Create(payload);
         }
         Authorize(request);
-        using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, ct, SocialDefaults.UploadTimeout(files.Sum(f => (long)f.Bytes.Length))).ConfigureAwait(false);
         using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
         if (!IsSuccess(response)) return SocialPostResult.Failed(Failure(response, doc));
         if (doc is null || Str(doc.RootElement, "id") is not { } messageId)
@@ -186,7 +186,7 @@ internal sealed class DiscordChannel : ChannelBase
 
         // The message is up: what follows must not lose that answer, so it runs on its own short deadline rather than
         // the caller's token (a cancel now would leave the attempt pending, and a webhook could then never confirm it).
-        using var after = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var after = AfterPost();
         if (_bot is { Crosspost: true })
             await CrosspostAsync(messageId, notes, after.Token).ConfigureAwait(false);
 
@@ -210,7 +210,7 @@ internal sealed class DiscordChannel : ChannelBase
         Authorize(request);
         try
         {
-            using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (IsSuccess(response)) return;
             using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             notes.Add($"The message is up but wasn't published to following servers ({Failure(response, doc).Message}).");
@@ -231,7 +231,7 @@ internal sealed class DiscordChannel : ChannelBase
         Authorize(request);
         try
         {
-            using var response = await Api.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await SendAsync(request, ct).ConfigureAwait(false);
             if (!IsSuccess(response)) return null;
             using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             return _guildId = doc is null ? null : Str(doc.RootElement, "guild_id");

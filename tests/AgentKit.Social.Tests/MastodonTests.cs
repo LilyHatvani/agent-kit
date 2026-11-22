@@ -55,6 +55,8 @@ public sealed class MastodonTests : IDisposable
                 case "slow":
                     _mediaState[mediaId] = "ok";
                     return FakeNetwork.Json(HttpStatusCode.PartialContent, new { id = mediaId, url = (string?)null });
+                case "stuck":
+                    return FakeNetwork.Json(HttpStatusCode.PartialContent, new { id = mediaId, url = (string?)null });
                 case "broken":
                     return FakeNetwork.Json(HttpStatusCode.UnprocessableEntity, new { error = "Processing failed" });
                 default:
@@ -296,5 +298,89 @@ public sealed class MastodonTests : IDisposable
         Assert.Throws<ArgumentException>(() => _host.Channels.Mastodon(new MastodonAccount(new Uri("http://mastodon.example"), Token)));
         Assert.Throws<ArgumentException>(() => _host.Channels.Mastodon(new MastodonAccount(new Uri("https://10.0.0.5"), Token)));
         Assert.Throws<ArgumentException>(() => _host.Channels.Mastodon(new MastodonAccount(new Uri("https://localhost"), Token)));
+    }
+
+    [Fact]
+    public async Task A_cleanup_that_never_answers_after_the_status_is_up_still_records_it_as_posted()
+    {
+        // The first status lands but its answer is lost; the resend gets the first status back, and its own upload's
+        // DELETE never answers. The cleanup's deadline runs out on the host's clock: the post is still Posted.
+        var inner = _host.Network.Respond;
+        var lost = false;
+        _host.Network.Respond = r =>
+        {
+            var answer = inner(r);
+            if (r.Uri.AbsolutePath == "/api/v1/statuses" && !lost)
+            {
+                lost = true;
+                answer.Dispose();
+                throw new TaskCanceledException("lost");
+            }
+            return answer;
+        };
+        _host.Network.Hang = r => r.Method == HttpMethod.Delete;
+        await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+
+        var resend = _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+        while (!_host.Network.Seen.Any(s => s.Method == HttpMethod.Delete)) await Task.Delay(5);
+        _host.Clock.Advance(SocialDefaults.AfterPostTimeout + TimeSpan.FromSeconds(1));
+        var result = await resend;
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal(SocialAttemptState.Posted, _host.Ledger.Find("post-1")!.State);
+        Assert.Equal(1, _statuses);
+    }
+
+    [Fact]
+    public async Task An_upload_that_breaks_in_transport_posts_nothing_and_deletes_the_ones_before_it()
+    {
+        _host.Network.Fail = r => r.Uri.AbsolutePath == "/api/v2/media" && _media == 1 ? new HttpRequestException("connection reset") : null;
+        var result = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1), Picture(2)] });
+
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.StartsWith("Picture 2 of 2 didn't upload", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("the 1 already uploaded were deleted", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Equal(["media-1"], Deleted);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/api/v1/statuses");
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+    }
+
+    [Fact]
+    public async Task A_picture_still_processing_after_the_checks_posts_nothing()
+    {
+        MediaPlan.Enqueue("stuck");
+        var channel = _host.Channels.Mastodon(new MastodonAccount(new Uri("https://mastodon.example/"), Token)
+        {
+            MediaPollInterval = TimeSpan.FromMilliseconds(1),
+            MediaPollAttempts = 3,
+        });
+        var result = await channel.PostAsync(Post() with { Images = [Picture(1)] });
+
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.Contains("still processing it after 3 checks", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Equal(3, _host.Network.Seen.Count(s => s.Method == HttpMethod.Get));
+        Assert.Equal(["media-1"], Deleted);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/api/v1/statuses");
+    }
+
+    [Theory]
+    [InlineData(-1, 30)]
+    [InlineData(10, -1)]
+    public void A_negative_poll_interval_or_count_is_refused(int intervalMs, int attempts) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => _host.Channels.Mastodon(new MastodonAccount(new Uri("https://mastodon.example"), Token)
+        {
+            MediaPollInterval = TimeSpan.FromMilliseconds(intervalMs),
+            MediaPollAttempts = attempts,
+        }));
+
+    [Fact]
+    public async Task An_answer_over_a_mebibyte_is_never_buffered()
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.OK, "{\"id\":\"1\",\"pad\":\"" + new string('x', 2 * 1024 * 1024) + "\"}");
+        var result = await Channel().PostAsync(Post());
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.True(result.Failure.MayHavePosted);
     }
 }

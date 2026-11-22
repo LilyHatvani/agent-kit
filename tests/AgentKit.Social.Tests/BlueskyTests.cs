@@ -395,6 +395,34 @@ public sealed class BlueskyTests : IDisposable
     }
 
     [Fact]
+    public async Task A_picture_with_its_size_carries_an_aspect_ratio_and_one_without_doesnt()
+    {
+        await Channel().PostAsync(Post() with { Images = [Picture(300) with { Width = 1200, Height = 630 }, Picture(400)] });
+        var images = _host.Network.Seen[^1].Json.GetProperty("record").GetProperty("embed").GetProperty("images");
+        Assert.Equal(1200, images[0].GetProperty("aspectRatio").GetProperty("width").GetInt32());
+        Assert.Equal(630, images[0].GetProperty("aspectRatio").GetProperty("height").GetInt32());
+        Assert.False(images[1].TryGetProperty("aspectRatio", out _));
+    }
+
+    [Fact]
+    public async Task An_upload_that_breaks_in_transport_posts_nothing_and_a_retry_starts_afresh()
+    {
+        var broke = false;
+        _host.Network.Fail = r => r.Uri.AbsolutePath.EndsWith("uploadBlob", StringComparison.Ordinal) && !broke && (broke = true)
+            ? new HttpRequestException("connection reset")
+            : null;
+        var first = await _host.Publisher.PostAsync(Channel(), Post() with { Card = null, Images = [Picture(300)] });
+        Assert.Equal(SocialFailureKind.Transient, first.Failure!.Kind);
+        Assert.False(first.Failure.MayHavePosted);
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+
+        var second = await _host.Publisher.PostAsync(Channel(), Post() with { Card = null, Images = [Picture(300)] });
+        Assert.True(second.Posted, second.Failure?.Message);
+        Assert.False(second.AlreadyPosted);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath.EndsWith("getRecord", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task An_animated_gif_posts_with_a_note_that_it_shows_still()
     {
         var animated = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };

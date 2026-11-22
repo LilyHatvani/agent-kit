@@ -49,6 +49,12 @@ public sealed record SocialImage
 
     /// <summary>What the picture shows, for people who can't see it. Required: a picture without it is refused.</summary>
     public required string Alt { get; init; }
+
+    /// <summary>The picture's width in pixels, when the host knows it (Bluesky lays the post out by its aspect ratio).</summary>
+    public int? Width { get; init; }
+
+    /// <summary>The picture's height in pixels, when the host knows it.</summary>
+    public int? Height { get; init; }
 }
 
 /// <summary>The preview card of a post's link: what a page's Open Graph tags say.</summary>

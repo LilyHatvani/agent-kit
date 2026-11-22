@@ -36,6 +36,9 @@ public sealed class FakeNetwork : HttpMessageHandler
     /// <summary>When set, sending throws this instead of answering (a dropped connection, a timeout).</summary>
     public Func<SeenRequest, Exception?>? Fail { get; set; }
 
+    /// <summary>When it says so, the request is never answered: it waits until its token is cancelled.</summary>
+    public Func<SeenRequest, bool>? Hang { get; set; }
+
     public IReadOnlyList<SeenRequest> Seen => [.. _seen];
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -54,6 +57,7 @@ public sealed class FakeNetwork : HttpMessageHandler
         var seen = new SeenRequest(request.Method, request.RequestUri!, headers, contentType, body);
         _seen.Enqueue(seen);
         if (Fail?.Invoke(seen) is { } e) throw e;
+        if (Hang?.Invoke(seen) == true) await Task.Delay(Timeout.Infinite, cancellationToken);
         return Respond(seen);
     }
 
@@ -75,13 +79,63 @@ public sealed class FakeNetwork : HttpMessageHandler
     }
 }
 
+/// <summary>
+/// A clock the test moves. Its timers fire only when <see cref="Advance"/> passes their time, so a deadline the package
+/// sets on the host's clock (a call's, a cleanup's) runs out exactly when a test says.
+/// </summary>
 public sealed class TestClock(DateTimeOffset start) : TimeProvider
 {
+    private readonly List<ManualTimer> _timers = [];
+
     public DateTimeOffset Now { get; set; } = start;
 
     public override DateTimeOffset GetUtcNow() => Now;
 
-    public void Advance(TimeSpan by) => Now += by;
+    public void Advance(TimeSpan by)
+    {
+        Now += by;
+        List<ManualTimer> due;
+        lock (_timers) due = [.. _timers.Where(t => t.Due is { } d && d <= Now)];
+        foreach (var timer in due) timer.Fire();
+    }
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        var timer = new ManualTimer(this, callback, state);
+        timer.Change(dueTime, period);
+        lock (_timers) _timers.Add(timer);
+        return timer;
+    }
+
+    private void Remove(ManualTimer timer)
+    {
+        lock (_timers) _timers.Remove(timer);
+    }
+
+    private sealed class ManualTimer(TestClock clock, TimerCallback callback, object? state) : ITimer
+    {
+        public DateTimeOffset? Due { get; private set; }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            Due = dueTime == Timeout.InfiniteTimeSpan ? null : clock.Now + dueTime;
+            return true;
+        }
+
+        public void Fire()
+        {
+            Due = null;
+            callback(state);
+        }
+
+        public void Dispose() => clock.Remove(this);
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
 }
 
 /// <summary>Every log line written through the host's logging, formatted, with its category.</summary>
