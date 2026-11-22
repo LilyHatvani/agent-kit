@@ -12,6 +12,9 @@ small interfaces the host implements.
 | --- | --- | --- |
 | NuGet [`AgentKit.McpOAuth`](src/AgentKit.McpOAuth/README.md) | MCP authorization server on OpenIddict. PKCE S256, hashed reference tokens, audience pinning, RFC 9728 discovery, a POST-only consent gate, uncached per-call revocation, issuer pinning behind a proxy | **built** |
 | NuGet [`AgentKit.ProviderSignIn`](src/AgentKit.ProviderSignIn/README.md) | Server-driven Google and Discord sign-in. PKCE S256, a single-use state bound to the browser, an ID token check with nonce, a verified (provider, account id) for the host to bind, never matched by email | **built** |
+| NuGet [`AgentKit.Secrets`](src/AgentKit.Secrets/README.md) | Secrets at rest: a keyring of master keys from configuration (current seals, previous only open), key ids that open nothing, AES-256-GCM with associated data naming the row | **built** |
+| NuGet [`AgentKit.Push`](src/AgentKit.Push/README.md) | Web Push on the BCL: RFC 8291 encryption, the RFC 8292 VAPID header, key and subscription checks, and the receiving side for tests | **built** |
+| NuGet [`AgentKit.Fetch`](src/AgentKit.Fetch/README.md) | Outgoing HTTP to addresses someone else chose: one table of public addresses, checked at connect time so redirects and DNS rebinding meet it | **built** |
 | NuGet `AgentKit.Postgres` | Append-only guard, worker-cursor leases, a run-once migrator | planned |
 | NuGet `AgentKit.Storage` | S3 SigV4 query presigner that signs Content-Length | planned |
 | npm `@agentkit/tooling` | Railway CLI wrapper, a ship-gate core, bundle budgets, a theme contrast check | planned |
@@ -76,6 +79,9 @@ dotnet test --project tests/AgentKit.McpOAuth.Tests
 ```bash
 dotnet test --project tests/AgentKit.ProviderSignIn.Tests
 ```
+
+Secrets, Push and Fetch need no database: `dotnet test --project tests/AgentKit.Secrets.Tests` (and `.Push.`,
+`.Fetch.`).
 
 The tests are blackbox: a minimal host uses the package exactly as a product would, and every assertion goes through
 HTTP. ProviderSignIn's tests talk to stub Google and Discord servers behind the package's HttpClient; the stubs check

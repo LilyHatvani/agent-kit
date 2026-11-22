@@ -2,9 +2,15 @@
   <Folder Name="/src/">
     <Project Path="src/AgentKit.McpOAuth/AgentKit.McpOAuth.csproj" />
     <Project Path="src/AgentKit.ProviderSignIn/AgentKit.ProviderSignIn.csproj" />
+    <Project Path="src/AgentKit.Secrets/AgentKit.Secrets.csproj" />
+    <Project Path="src/AgentKit.Push/AgentKit.Push.csproj" />
+    <Project Path="src/AgentKit.Fetch/AgentKit.Fetch.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentKit.McpOAuth.Tests/AgentKit.McpOAuth.Tests.csproj" />
     <Project Path="tests/AgentKit.ProviderSignIn.Tests/AgentKit.ProviderSignIn.Tests.csproj" />
+    <Project Path="tests/AgentKit.Secrets.Tests/AgentKit.Secrets.Tests.csproj" />
+    <Project Path="tests/AgentKit.Push.Tests/AgentKit.Push.Tests.csproj" />
+    <Project Path="tests/AgentKit.Fetch.Tests/AgentKit.Fetch.Tests.csproj" />
   </Folder>
 </Solution>

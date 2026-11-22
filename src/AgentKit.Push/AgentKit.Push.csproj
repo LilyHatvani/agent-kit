@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.Push</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.Push</PackageId>
+    <Description>Web Push on the BCL, no vendor SDK: message encryption (RFC 8291, aes128gcm per RFC 8188), the VAPID Authorization header (RFC 8292, an ES256 JWT), VAPID key pairs with the checks a push service makes, a subscription key check, and the receiving side (decrypt, verify VAPID) for tests.</Description>
+    <PackageTags>web-push;push-notifications;vapid;rfc8291;rfc8292;pwa</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentKit.Push.Tests" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

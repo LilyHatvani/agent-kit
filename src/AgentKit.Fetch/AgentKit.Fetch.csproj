@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.Fetch</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.Fetch</PackageId>
+    <Description>Outgoing HTTP to addresses someone else chose (a URL an agent names, a webhook, a push endpoint) that can't be turned against the network the server sits on: one table of what is public, checked at connect time on the addresses DNS gave for that very connection, so redirects and DNS rebinding meet the same check.</Description>
+    <PackageTags>ssrf;http;security;dns-rebinding;webhooks</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

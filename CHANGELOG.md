@@ -2,6 +2,34 @@
 
 Per package, newest first. Versions are `0.1.<CI run number>`; an entry names the first version that carries it.
 
+## AgentKit.Secrets
+
+### Unreleased
+
+- **First release**, lifted from Relay's credential store (its decision 0024). A keyring from configuration
+  (`<Section>:MasterKey`, `<Section>:PreviousKeys`; base64 or 64 hex digits), key ids that open nothing (`k` + 16 hex of
+  SHA-256 over the host's label and the key), and AES-256-GCM sealing with a fresh nonce and associated data naming the
+  row. `Sealer.Why` says whether a value failed for no master key, a key out of the keyring, or a row that doesn't open.
+  The format is Relay's (ciphertext then tag), so rows Relay sealed before keep opening.
+
+## AgentKit.Push
+
+### Unreleased
+
+- **First release**, lifted from Relay's `Push/WebPush.cs`. RFC 8291 encryption (pinned to the RFC's own bytes), the
+  RFC 8292 VAPID header, `VapidKeys` with the checks a push service makes, `WebPush.SubscriptionRefusal`, and
+  `WebPushReceiver` (decrypt, verify VAPID) for tests.
+
+## AgentKit.Fetch
+
+### Unreleased
+
+- **First release.** One table of public addresses (`PublicAddress.IsPublic`), merged from Relay's address guard and
+  Agent Blog's media fetch: IPv6 is public only inside global unicast, so NAT64 and IPv4-compatible addresses are
+  refused; Teredo, 6to4 and both documentation ranges are refused too. `GuardedHttp.CreateHandler` checks at connect
+  time on the addresses DNS gave for that connection, optionally limits ports and follows redirects through the same
+  check; `PublicAddress.Refusal` says early what is certain to fail.
+
 ## AgentKit.ProviderSignIn
 
 ### Unreleased
