@@ -17,11 +17,11 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
   - `TextRules.Cut` and the internal `DiscordWebhookUrl` are gone.
   - Changed on that reading, each to the stricter or the correct side:
     - A 408 or 425 is `Transient` (the network didn't act on it), not `Rejected`.
-    - Discord's 410 is `Auth`, like its 404; Slack's 401 joins its 403, 404 and 410 as `Auth`. Off Discord and Slack, a
-      404 or 410 is still `Rejected`.
+    - Discord's 410 is `Auth`, like its 404. Off Discord and Slack, a 404 or 410 is still `Rejected`.
     - A Discord webhook id with a sign (`+1`) or past 64 bits, or an API segment other than `v<n>`, is refused.
-    - A `Retry-After` with a fraction is read. One with a sign or an exponent is ignored, so the network's reset header
-      or body still decides.
+    - A `Retry-After` with a fraction is read, and it now goes before the reset headers (1.5 s where
+      `X-RateLimit-Reset-After: 30` gave 30 s), as a whole-seconds one always did. One with a sign or an exponent is
+      ignored, so the network's reset header or body still decides.
     - A body `retry_after` of a day or more waits a day; it was ignored before.
   - Changed, and named here so nothing is a surprise:
     - The Discord host is compared as its IDN form, so a full-width `ｄiscord.com` reads as `discord.com`. The request
