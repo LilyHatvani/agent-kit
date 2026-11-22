@@ -256,7 +256,8 @@ public sealed class MastodonTests : IDisposable
 
         var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
         Assert.True(channel.Compose(Post() with { Images = [gif] }).Fits);
-        Assert.Contains("goes alone", Assert.Single(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Problems), StringComparison.Ordinal);
+        // An animated GIF becomes a gifv, which Mastodon lets sit beside pictures (its images_and_video check is audio and video only).
+        Assert.True(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Fits);
 
         var noAlt = channel.Compose(Post() with { Images = [Picture(1) with { Alt = " " }] });
         Assert.Contains("no alt text", Assert.Single(noAlt.Problems), StringComparison.Ordinal);

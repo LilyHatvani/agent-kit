@@ -29,8 +29,8 @@ internal sealed class BlueskyChannel : ChannelBase
     private const int MaxTagGraphemes = 64;
     private const string Collection = "app.bsky.feed.post";
 
-    /// <summary>app.bsky.embed.images: at most 4, each blob at most 2,000,000 bytes; a GIF would show as a still.</summary>
-    private static readonly MediaRules Pictures = new(4, 2_000_000, int.MaxValue, AnimatedGifRule.Refused, 0);
+    /// <summary>app.bsky.embed.images: at most 4, each blob at most 2,000,000 bytes. An animated GIF goes, with a note that it shows still.</summary>
+    private static readonly MediaRules Pictures = new(4, 2_000_000, int.MaxValue, AnimatedGifRule.Allowed, 2_000_000);
 
     private readonly BlueskyAccount _account;
     private readonly string _sessionKey;
@@ -100,6 +100,8 @@ internal sealed class BlueskyChannel : ChannelBase
                 if (uploaded is not null && Prop(uploaded.RootElement, "blob") is { ValueKind: JsonValueKind.Object } blob)
                 {
                     images.Add(new JsonObject { ["alt"] = picture.Alt, ["image"] = JsonNode.Parse(blob.GetRawText()) });
+                    if (NormalType(picture) == "image/gif" && Media.IsAnimatedGif(picture.Bytes.Span))
+                        notes.Add(Invariant($"Picture {i + 1} is an animated GIF; Bluesky shows a picture in a post as a still, so it doesn't move."));
                     continue;
                 }
             }

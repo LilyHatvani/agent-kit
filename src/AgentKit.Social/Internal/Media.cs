@@ -6,11 +6,8 @@ internal enum AnimatedGifRule
     /// <summary>Posted like any picture.</summary>
     Allowed,
 
-    /// <summary>Allowed only as the post's one picture (it becomes a video).</summary>
+    /// <summary>Allowed only as the post's one picture (X: "up to 4 photos, 1 animated GIF or 1 video").</summary>
     Alone,
-
-    /// <summary>Refused: the network would show it as a still.</summary>
-    Refused,
 }
 
 /// <summary>A network's limits on pictures in one post.</summary>

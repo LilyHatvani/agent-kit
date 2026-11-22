@@ -197,8 +197,18 @@ internal static partial class TextRules
                 emoji = true;
             weight += v is <= 0x10FF or (>= 0x2000 and <= 0x200D) or (>= 0x2010 and <= 0x201F) or (>= 0x2032 and <= 0x2037) ? 1 : 2;
         }
-        // A ZWJ join may be a sequence X's table doesn't know (then X counts every part): pay per part.
-        return emoji && !grapheme.Contains('‍', StringComparison.Ordinal) ? 2 : weight;
+        return emoji && !PerPart(grapheme) ? 2 : weight;
+    }
+
+    /// <summary>
+    /// Sequences X may not count as one emoji, so they pay per part (never under): a ZWJ join (a sequence X's table
+    /// doesn't know is counted part by part), a text-presentation selector (U+FE0E: <c>❤︎</c> counts 4 in
+    /// twitter-text) and a keycap on anything but 0–9, # and * (<c>a⃣</c> counts 3).
+    /// </summary>
+    private static bool PerPart(string grapheme)
+    {
+        if (grapheme.Contains('‍', StringComparison.Ordinal) || grapheme.Contains('︎', StringComparison.Ordinal)) return true;
+        return grapheme.Contains('⃣', StringComparison.Ordinal) && grapheme[0] is not ((>= '0' and <= '9') or '#' or '*');
     }
 
     /// <summary>Bluesky's short form of a link in text: no scheme, at most 30 characters, cut with an ellipsis (as the Bluesky app does).</summary>

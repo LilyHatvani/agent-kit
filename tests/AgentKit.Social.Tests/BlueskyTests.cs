@@ -389,9 +389,19 @@ public sealed class BlueskyTests : IDisposable
             Assert.Single(channel.Compose(Post() with { Images = [Picture(9) with { ContentType = "image/svg+xml" }] }).Problems), StringComparison.Ordinal);
 
         var animated = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
-        Assert.Contains("shows as a still", Assert.Single(channel.Compose(Post() with { Images = [animated] }).Problems), StringComparison.Ordinal);
+        Assert.True(channel.Compose(Post() with { Images = [animated] }).Fits);
         var still = new SocialImage { Bytes = Pictures.Gif(1), ContentType = "image/gif", Alt = "A map" };
         Assert.True(channel.Compose(Post() with { Images = [still] }).Fits);
+    }
+
+    [Fact]
+    public async Task An_animated_gif_posts_with_a_note_that_it_shows_still()
+    {
+        var animated = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        var result = await Channel().PostAsync(Post() with { Images = [animated] });
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Contains("doesn't move", Assert.Single(result.Notes), StringComparison.Ordinal);
+        Assert.Equal("image/gif", _host.Network.Seen.Single(s => s.Uri.AbsolutePath.EndsWith("uploadBlob", StringComparison.Ordinal)).ContentType);
     }
 
     [Fact]

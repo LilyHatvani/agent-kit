@@ -56,7 +56,7 @@ internal sealed class MastodonChannel : ChannelBase
         var problems = new List<string>(LinkProblems(post));
         problems.AddRange(CardProblems(post));
         problems.AddRange(ImageProblems(post, new MediaRules(_account.MaxMediaAttachments, _account.ImageSizeLimit, MaxDescription,
-            AnimatedGifRule.Alone, _account.VideoSizeLimit)));
+            AnimatedGifRule.Allowed, _account.VideoSizeLimit)));
         if (length > _account.MaxCharacters) problems.Add($"The post is {length} characters and this instance takes {_account.MaxCharacters}.");
         if (text.Length == 0 && post.Images.Count == 0) problems.Add("The post is empty.");
         return new SocialComposition(text, length, _account.MaxCharacters, "characters", problems);
@@ -121,7 +121,9 @@ internal sealed class MastodonChannel : ChannelBase
             var attached = Prop(doc.RootElement, "media_attachments") is { ValueKind: JsonValueKind.Array } media
                 ? media.EnumerateArray().Select(m => Str(m, "id")).OfType<string>().ToHashSet(StringComparer.Ordinal)
                 : [];
-            await DeleteAsync([.. uploaded.Where(m => !attached.Contains(m))], ct).ConfigureAwait(false);
+            // The status is up: the cleanup runs on its own deadline, so a late cancel can't lose that answer.
+            using var after = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await DeleteAsync([.. uploaded.Where(m => !attached.Contains(m))], after.Token).ConfigureAwait(false);
         }
         var url = Str(doc.RootElement, "url") is { } u && Uri.TryCreate(u, UriKind.Absolute, out var parsed) ? parsed : null;
         return SocialPostResult.Success(id, url);

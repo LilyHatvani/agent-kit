@@ -55,7 +55,10 @@ public sealed class XTests : IDisposable
     [InlineData("日本語", 6)]                                     // CJK weighs 2
     [InlineData("😀", 2)]
     [InlineData("👍🏽", 2)]                                       // a skin-tone sequence weighs 2
-    [InlineData("1️⃣", 2)]                                        // a keycap weighs 2
+    [InlineData("1️⃣", 2)]                             // a keycap weighs 2
+    [InlineData("❤︎", 4)]                              // ❤︎ with the text selector: twitter-text counts 4
+    [InlineData("a⃣", 3)]                                   // a keycap on a letter: twitter-text counts 3
+    [InlineData("\U0001F600‍\U0001F600", 5)]                // a ZWJ pair no table knows: twitter-text counts 5
     [InlineData("👨‍👩‍👧‍👦", 11)]                                    // a ZWJ join is charged per part: never under X's count
     [InlineData("“quoted” — dash", 15)]                         // U+2010–U+201F weigh 1
     [InlineData("see https://example.com/a/very/long/path/that/goes/on/and/on", 27)]   // 4 + a URL at 23

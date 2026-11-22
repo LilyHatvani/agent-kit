@@ -161,15 +161,8 @@ internal abstract class ChannelBase : ISocialChannel
             }
             if (type == "image/gif" && Media.IsAnimatedGif(image.Bytes.Span))
             {
-                switch (rules.AnimatedGif)
-                {
-                    case AnimatedGifRule.Refused:
-                        yield return Invariant($"Picture {n} is an animated GIF, which {Name} shows as a still: post a still picture instead.");
-                        continue;
-                    case AnimatedGifRule.Alone when images.Count > 1:
-                        yield return Invariant($"Picture {n} is an animated GIF, which goes alone in a {Name} post; this one has {images.Count} pictures.");
-                        break;
-                }
+                if (rules.AnimatedGif == AnimatedGifRule.Alone && images.Count > 1)
+                    yield return Invariant($"Picture {n} is an animated GIF, which goes alone in a {Name} post; this one has {images.Count} pictures.");
                 if (image.Bytes.Length > rules.MaxAnimatedGifBytes)
                     yield return Invariant($"Picture {n} is an animated GIF of {image.Bytes.Length:N0} bytes and {Name} takes {rules.MaxAnimatedGifBytes:N0}.");
                 continue;

@@ -66,8 +66,8 @@ the same set again skips the channels that are up and resumes or retries the res
 
 | Network | How | Per post | Each picture | Animated GIF | Alt text |
 | --- | --- | --- | --- | --- | --- |
-| Bluesky | `uploadBlob`, then an `app.bsky.embed.images` embed | 4 | 2,000,000 bytes | refused: Bluesky shows it as a still | required by the lexicon |
-| Mastodon | `POST /api/v2/media` (polls `GET /api/v1/media/:id` while it answers 206), then `media_ids[]` | `MaxMediaAttachments` (4) | `ImageSizeLimit` (16 MiB) | alone, up to `VideoSizeLimit` (99 MiB): the instance makes it a video | 1500 |
+| Bluesky | `uploadBlob`, then an `app.bsky.embed.images` embed | 4 | 2,000,000 bytes | posted, with a note that it shows still (from recall: not stated in the lexicon) | required by the lexicon |
+| Mastodon | `POST /api/v2/media` (polls `GET /api/v1/media/:id` while it answers 206), then `media_ids[]` | `MaxMediaAttachments` (4) | `ImageSizeLimit` (16 MiB) | becomes a gifv, beside pictures too, up to `VideoSizeLimit` (99 MiB) | 1500 |
 | X | `POST /2/media/upload` (`tweet_image` or `tweet_gif`, polls the STATUS command while processing), `POST /2/media/metadata`, then `media.media_ids` | 4 | 5,000,000 bytes | alone, up to 15,000,000 bytes | 1000 |
 | Discord | files on the message itself (`files[n]`, `attachments[]`), with `SUPPRESS_EMBEDS` so the link doesn't unfurl into a card | 10 | 20 MiB, 25 MiB a message | plays among other pictures | 1024 |
 
@@ -159,9 +159,11 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
     lasts two hours; `SocialChannels.RefreshXTokenAsync(client, refreshToken)` trades a refresh token
     (`offline.access`) for a new one. Store the refresh token the answer carries before using the access token: the
     one sent may be spent. An `Auth` failure there means the owner connects X again.
-- 280 weighted characters, counted so it is never under X's own count (twitter-text v3: most Latin text weighs 1, CJK
-  and emoji 2, a ZWJ emoji join per part, every http(s) URL 23, a bare domain or other dotted word at least 23, after
-  NFC). `MaxWeightedLength` raises the limit for an X Premium account.
+- 280 weighted characters, counted to stay at or over X's own count (twitter-text v3: most Latin text weighs 1, CJK
+  and emoji 2; a ZWJ join, a text-presentation selector or a keycap on a letter per part; every http(s) URL 23, a
+  bare domain or other dotted word at least 23; after NFC). Checked against twitter-text 3.1.0 on the cases in the
+  tests, not against X itself, whose emoji table can be newer. `MaxWeightedLength` raises the limit for an X Premium
+  account.
 - Without pictures, X builds the card from the page. A picture's alt text that X refuses costs the description, not the
   picture: the post goes up with a note.
 - `Id` is `x` and Mastodon's is the instance host: they don't tell two accounts on the same network apart, so keep the
@@ -200,8 +202,10 @@ The adapters carry over Echo of Dreams' announcement cross-posters (Bluesky, X, 
   (`LinkCard.Accent`, `Footer`, `PublishedAt`).
 - **Changed, and why:**
   - Pictures post as native media whenever the host gives them, and a picture that fails stops the post. The
-    cross-posters attached X's picture only when the text carried another link and dropped a failed picture to post
-    without it; the owner asked for direct picture posts with nothing missing (2026-11-22).
+    cross-posters attached X's picture only when the text carried another link (their spec's S2b) and dropped a failed
+    picture to post without it; the owner asked for direct picture posts with nothing missing (2026-11-22). Both
+    older rules stay possible in the host: which `Images` to pass is its choice, and posting again without them after a
+    failure is one more call.
   - A full http(s) URL counts exactly 23 on X and a dotted word the larger of its weight and 23; the cross-poster
     charged both its own weight plus 23, which never undercounts but refuses posts X takes.
   - Bluesky's session is kept per account in memory (createSession is rate-limited); the cross-poster signed in per
