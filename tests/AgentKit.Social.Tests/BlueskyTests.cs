@@ -20,6 +20,10 @@ public sealed class BlueskyTests : IDisposable
     private readonly TestHost _host = new();
     private readonly Dictionary<string, string> _records = [];
     private int _sessions;
+    private int _blobs;
+
+    /// <summary>Which uploadBlob call (1-based) the fake refuses; 0 for none.</summary>
+    private int FailBlob { get; set; }
 
     public BlueskyTests()
     {
@@ -39,24 +43,27 @@ public sealed class BlueskyTests : IDisposable
             if (r.Json.GetProperty("password").GetString() != Password)
                 return FakeNetwork.Json(HttpStatusCode.Unauthorized, new { error = "AuthenticationRequired", message = "Invalid identifier or password" });
             _sessions++;
-            return FakeNetwork.Json(HttpStatusCode.OK, new { accessJwt = $"access-{_sessions}", refreshJwt = "refresh", handle = "writer.bsky.social", did = Did });
+            return FakeNetwork.Json(HttpStatusCode.OK, new { accessJwt = $"access-{_sessions}", refreshJwt = "refresh-secret-jwt", handle = "writer.bsky.social", did = Did });
         }
         if (r.Header("Authorization") is not { } auth || !auth.StartsWith("Bearer access-", StringComparison.Ordinal))
             return FakeNetwork.Json(HttpStatusCode.Unauthorized, new { error = "AuthenticationRequired", message = "no session" });
         switch (path)
         {
+            case "/xrpc/com.atproto.repo.uploadBlob" when ++_blobs == FailBlob:
+                return FakeNetwork.Json(HttpStatusCode.BadRequest, new { error = "BlobTooLarge", message = "This file is too large" });
             case "/xrpc/com.atproto.repo.uploadBlob":
                 return FakeNetwork.Json(HttpStatusCode.OK, new { blob = new Dictionary<string, object>
                 {
                     ["$type"] = "blob",
-                    ["ref"] = new Dictionary<string, string> { ["$link"] = "bafkreithumb" },
+                    ["ref"] = new Dictionary<string, string> { ["$link"] = "bafk" + r.Body.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                     ["mimeType"] = r.ContentType!,
                     ["size"] = r.Body.Length,
                 } });
             case "/xrpc/com.atproto.repo.createRecord":
                 var rkey = r.Json.GetProperty("rkey").GetString()!;
                 if (_records.ContainsKey(rkey))
-                    return FakeNetwork.Json(HttpStatusCode.BadRequest, new { error = "InvalidRequest", message = "Record already exists" });
+                    // The reference PDS throws a plain error for a taken key (MST.add), which reaches the client as a 500.
+                    return FakeNetwork.Json(HttpStatusCode.InternalServerError, new { error = "InternalServerError", message = "Internal Server Error" });
                 _records[rkey] = r.Text;
                 return FakeNetwork.Json(HttpStatusCode.OK, new { uri = $"at://{Did}/app.bsky.feed.post/{rkey}", cid = "bafyrecord" });
             case "/xrpc/com.atproto.repo.getRecord":
@@ -128,7 +135,7 @@ public sealed class BlueskyTests : IDisposable
         Assert.Equal("https://blog.example.com/posts/how-to-write-a-lorebook-that-remembers", external.GetProperty("external").GetProperty("uri").GetString());
         Assert.Equal("How to write a lorebook", external.GetProperty("external").GetProperty("title").GetString());
         Assert.Equal("Twelve entries, one world.", external.GetProperty("external").GetProperty("description").GetString());
-        Assert.Equal("bafkreithumb", external.GetProperty("external").GetProperty("thumb").GetProperty("ref").GetProperty("$link").GetString());
+        Assert.Equal("bafk2048", external.GetProperty("external").GetProperty("thumb").GetProperty("ref").GetProperty("$link").GetString());
 
         Assert.Equal($"at://{Did}/app.bsky.feed.post/{rkey}", result.PostId);
         Assert.Equal(new Uri($"https://bsky.app/profile/{Did}/post/{rkey}"), result.PostUrl);
@@ -329,5 +336,130 @@ public sealed class BlueskyTests : IDisposable
     {
         Assert.Throws<ArgumentException>(() => _host.Channels.Bluesky(new BlueskyAccount("a", "b-c-d-e") { Service = new Uri("http://bsky.social") }));
         Assert.Throws<ArgumentException>(() => _host.Channels.Bluesky(new BlueskyAccount("a", "b-c-d-e") { Service = new Uri("https://127.0.0.1") }));
+    }
+
+    private static SocialImage Picture(int bytes, string alt = "A map of the coast") => new() { Bytes = Pictures.Png(bytes), ContentType = "image/png", Alt = alt };
+
+    /// <summary>app.bsky.embed.images (lexicon: at most 4 images, each blob at most 2,000,000 bytes, alt required).</summary>
+    [Fact]
+    public async Task Pictures_post_as_an_images_embed_with_alt_text_and_the_link_stays_a_text_facet()
+    {
+        var result = await Channel().PostAsync(Post() with { Images = [Picture(300), Picture(400, "A second map")] });
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        var uploads = _host.Network.Seen.Where(s => s.Uri.AbsolutePath.EndsWith("uploadBlob", StringComparison.Ordinal)).ToList();
+        // Two uploads, the pictures: the card's thumb is not sent when the post has pictures.
+        Assert.Equal([300, 400], uploads.Select(u => u.Body.Length));
+        Assert.All(uploads, u => Assert.Equal("image/png", u.ContentType));
+        var record = _host.Network.Seen[^1].Json.GetProperty("record");
+        var embed = record.GetProperty("embed");
+        Assert.Equal("app.bsky.embed.images", embed.GetProperty("$type").GetString());
+        var images = embed.GetProperty("images").EnumerateArray().ToList();
+        Assert.Equal(["A map of the coast", "A second map"], images.Select(i => i.GetProperty("alt").GetString()));
+        Assert.Equal(["bafk300", "bafk400"], images.Select(i => i.GetProperty("image").GetProperty("ref").GetProperty("$link").GetString()));
+        Assert.Contains(record.GetProperty("facets").EnumerateArray(),
+            f => f.GetProperty("features")[0].TryGetProperty("uri", out var u) && u.GetString() == "https://blog.example.com/posts/how-to-write-a-lorebook-that-remembers");
+    }
+
+    [Fact]
+    public async Task A_picture_refused_halfway_posts_nothing_and_says_what_becomes_of_the_uploaded_ones()
+    {
+        FailBlob = 2;
+        var result = await _host.Publisher.PostAsync(Channel(), Post() with { Card = null, Images = [Picture(300), Picture(400), Picture(500)] });
+
+        Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.StartsWith("Picture 2 of 3 didn't upload", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("This file is too large", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Bluesky deletes the pictures already uploaded once no post uses them", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Empty(_records);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath.EndsWith("createRecord", StringComparison.Ordinal));
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+    }
+
+    [Fact]
+    public void Picture_limits_are_refused_in_compose_with_the_reason()
+    {
+        var channel = Channel();
+        Assert.True(channel.Compose(Post() with { Images = [Picture(2_000_000)] }).Fits);
+        Assert.Contains("2,000,000", Assert.Single(channel.Compose(Post() with { Images = [Picture(2_000_001)] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("at most 4", Assert.Single(channel.Compose(Post() with { Images = [Picture(9), Picture(9), Picture(9), Picture(9), Picture(9)] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("no alt text", Assert.Single(channel.Compose(Post() with { Images = [Picture(9, "")] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("PNG, JPEG, GIF and WebP",
+            Assert.Single(channel.Compose(Post() with { Images = [Picture(9) with { ContentType = "image/svg+xml" }] }).Problems), StringComparison.Ordinal);
+
+        var animated = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        Assert.Contains("shows as a still", Assert.Single(channel.Compose(Post() with { Images = [animated] }).Problems), StringComparison.Ordinal);
+        var still = new SocialImage { Bytes = Pictures.Gif(1), ContentType = "image/gif", Alt = "A map" };
+        Assert.True(channel.Compose(Post() with { Images = [still] }).Fits);
+    }
+
+    [Fact]
+    public async Task A_resumed_attempt_whose_record_key_turns_out_taken_reads_it_back()
+    {
+        // The first try lands but its answer is lost; on resume the read-back misses it once, the create meets the
+        // reference PDS's answer for a taken key (a 500), and the package looks again instead of leaving it pending.
+        var post = Post() with { Card = null };
+        var inner = _host.Network.Respond;
+        var dropped = false;
+        var reads = 0;
+        _host.Network.Respond = r =>
+        {
+            if (r.Uri.AbsolutePath.EndsWith("getRecord", StringComparison.Ordinal) && ++reads == 1)
+                return FakeNetwork.Json(HttpStatusCode.BadRequest, new { error = "RecordNotFound", message = "Could not locate record" });
+            var answer = inner(r);
+            if (r.Uri.AbsolutePath.EndsWith("createRecord", StringComparison.Ordinal) && !dropped)
+            {
+                dropped = true;
+                answer.Dispose();
+                throw new TaskCanceledException("lost");
+            }
+            return answer;
+        };
+        await _host.Publisher.PostAsync(Channel(), post);
+        var second = await _host.Publisher.PostAsync(Channel(), post);
+
+        Assert.True(second.Posted, second.Failure?.Message);
+        Assert.True(second.AlreadyPosted);
+        Assert.Single(_records);
+        Assert.Equal(2, reads);
+    }
+
+    [Fact]
+    public async Task Facets_cover_a_url_with_balanced_parentheses_and_whole_tags_in_scripts_with_combining_marks()
+    {
+        await Channel().PostAsync(new SocialPost
+        {
+            Text = "Read https://en.wikipedia.org/wiki/Rust_(programming_language). #हिन्दी #2024",
+            Tags = ["தமிழ்"],
+            IdempotencyKey = "k",
+        });
+        var record = _host.Network.Seen[^1].Json.GetProperty("record");
+        Assert.EndsWith("#தமிழ்", record.GetProperty("text").GetString(), StringComparison.Ordinal);
+        var features = record.GetProperty("facets").EnumerateArray().Select(f => f.GetProperty("features")[0]).ToList();
+        Assert.Contains(features, f => f.TryGetProperty("uri", out var u) && u.GetString() == "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        Assert.Contains(features, f => f.TryGetProperty("tag", out var t) && t.GetString() == "हिन्दी");
+        Assert.Contains(features, f => f.TryGetProperty("tag", out var t) && t.GetString() == "தமிழ்");
+        Assert.DoesNotContain(features, f => f.TryGetProperty("tag", out var t) && t.GetString() == "2024");
+    }
+
+    [Fact]
+    public async Task The_refresh_token_is_scrubbed_by_a_channel_that_reuses_the_session()
+    {
+        await Channel().PostAsync(Post() with { Card = null });   // signs in and caches the session
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.BadRequest, new { error = "InvalidRequest", message = "echo refresh-secret-jwt" });
+        var reused = await Channel().PostAsync(Post(key: "b") with { Card = null });
+        Assert.Equal(1, _sessions);
+        Assert.Contains("echo ***", reused.Failure!.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("refresh-secret-jwt", reused.Failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_email_identifier_never_reaches_the_channel_id()
+    {
+        var channel = _host.Channels.Bluesky(new BlueskyAccount("writer@example.com", Password));
+        Assert.DoesNotContain("example.com", channel.Id, StringComparison.Ordinal);
+        Assert.StartsWith("bluesky:email-", channel.Id, StringComparison.Ordinal);
+        Assert.Equal(channel.Id, _host.Channels.Bluesky(new BlueskyAccount("Writer@Example.com", Password)).Id);
     }
 }

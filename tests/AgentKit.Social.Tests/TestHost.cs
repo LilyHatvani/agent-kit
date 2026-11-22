@@ -152,4 +152,38 @@ public static class Pictures
         signature.CopyTo(b, 0);
         return b;
     }
+
+    /// <summary>A real 1×1 GIF89a with <paramref name="frames"/> frames (two or more make it animated), padded to <paramref name="padTo"/> bytes.</summary>
+    public static byte[] Gif(int frames, int padTo = 0)
+    {
+        var b = new List<byte>();
+        b.AddRange("GIF89a"u8.ToArray());
+        b.AddRange([1, 0, 1, 0, 0x80, 0, 0]);               // 1×1, a global colour table of 2 entries
+        b.AddRange([0, 0, 0, 255, 255, 255]);
+        b.AddRange([0x21, 0xFF, 0x0B, .. "NETSCAPE2.0"u8.ToArray(), 0x03, 0x01, 0x00, 0x00, 0x00]);
+        for (var i = 0; i < frames; i++)
+        {
+            b.AddRange([0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00]);   // graphic control
+            b.AddRange([0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0]);                   // image descriptor
+            b.AddRange([0x02, 0x02, 0x44, 0x01, 0x00]);                      // LZW data
+        }
+        if (padTo > b.Count + 1)
+        {
+            // A comment extension of padding, in sub-blocks of 255.
+            b.AddRange([0x21, 0xFE]);
+            var left = padTo - b.Count - 2;
+            while (left > 0)
+            {
+                var n = Math.Min(255, Math.Max(1, left - 1));
+                b.Add((byte)n);
+                b.AddRange(new byte[n]);
+                left -= n + 1;
+            }
+            b.Add(0x00);
+        }
+        b.Add(0x3B);
+        return [.. b];
+    }
+
+    public static byte[] AnimatedGif(int padTo = 0) => Gif(2, padTo);
 }

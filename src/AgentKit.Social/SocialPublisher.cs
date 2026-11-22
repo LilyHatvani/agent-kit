@@ -54,8 +54,14 @@ public interface ISocialPostLedger
     /// </summary>
     Task<SocialAttemptRecord> BeginAsync(SocialAttemptRecord attempt, CancellationToken cancellationToken);
 
-    /// <summary>Records how an attempt ended (by its key).</summary>
-    Task SaveAsync(SocialAttemptRecord record, CancellationToken cancellationToken);
+    /// <summary>
+    /// Records how an attempt ended, but only over the same attempt still pending: the stored row for the key has
+    /// <paramref name="record"/>'s <see cref="SocialAttemptRecord.Token"/> and is <see cref="SocialAttemptState.Pending"/>
+    /// (an <c>UPDATE … WHERE key = @key AND token = @token AND state = 'pending'</c>). Anything else is left as it is and
+    /// the answer is false. So a late refusal from one caller never overwrites the post another caller already landed
+    /// on the same attempt.
+    /// </summary>
+    Task<bool> SaveAsync(SocialAttemptRecord record, CancellationToken cancellationToken);
 }
 
 /// <summary>One item for one channel in <see cref="SocialPublisher.PostEachAsync"/>.</summary>
@@ -90,11 +96,17 @@ public sealed class InMemorySocialPostLedger : ISocialPostLedger
     }
 
     /// <inheritdoc />
-    public Task SaveAsync(SocialAttemptRecord record, CancellationToken cancellationToken)
+    public Task<bool> SaveAsync(SocialAttemptRecord record, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
-        lock (_gate) _records[record.IdempotencyKey] = record;
-        return Task.CompletedTask;
+        lock (_gate)
+        {
+            if (!_records.TryGetValue(record.IdempotencyKey, out var stored) || stored.State != SocialAttemptState.Pending
+                || !string.Equals(stored.Token, record.Token, StringComparison.Ordinal))
+                return Task.FromResult(false);
+            _records[record.IdempotencyKey] = record;
+            return Task.FromResult(true);
+        }
     }
 
     /// <summary>The record for a key, if any.</summary>

@@ -54,10 +54,15 @@ public sealed class XTests : IDisposable
     [InlineData("café", 4)]                               // NFC first: decomposed é is one character
     [InlineData("日本語", 6)]                                     // CJK weighs 2
     [InlineData("😀", 2)]
-    [InlineData("👨‍👩‍👧‍👦", 2)]                                     // an emoji sequence weighs 2 whatever its length
+    [InlineData("👍🏽", 2)]                                       // a skin-tone sequence weighs 2
+    [InlineData("1️⃣", 2)]                                        // a keycap weighs 2
+    [InlineData("👨‍👩‍👧‍👦", 11)]                                    // a ZWJ join is charged per part: never under X's count
     [InlineData("“quoted” — dash", 15)]                         // U+2010–U+201F weigh 1
     [InlineData("see https://example.com/a/very/long/path/that/goes/on/and/on", 27)]   // 4 + a URL at 23
-    public void Weighted_length_follows_twitter_text_v3(string text, int weight) =>
+    [InlineData("see https://en.wikipedia.org/wiki/Rust_(programming_language)", 27)]  // the parenthesis is the URL's
+    [InlineData("visit example.com now", 33)]                   // a bare domain counts as a link, as twitter-text does
+    [InlineData("v2.0", 23)]                                    // a maybe-domain counts as one: never under
+    public void Weighted_length_is_never_under_twitter_text_v3(string text, int weight) =>
         Assert.Equal(weight, Channel().Compose(new SocialPost { Text = text, IdempotencyKey = "k" }).Length);
 
     [Fact]
@@ -121,5 +126,101 @@ public sealed class XTests : IDisposable
         var spent = await _host.Channels.RefreshXTokenAsync(new XClient("client-id-1"), "old-refresh-token");
         Assert.Equal(SocialFailureKind.Auth, spent.Failure!.Kind);
         Assert.Null(_host.Network.Seen[^1].Header("Authorization"));
+    }
+
+    /// <summary>
+    /// The media flow as X's docs give it: POST /2/media/upload (multipart media + media_category), GET /2/media/upload
+    /// ?command=STATUS while processing, POST /2/media/metadata for alt text, then media.media_ids on the post.
+    /// </summary>
+    private HttpResponseMessage XWithMedia(SeenRequest r, Func<int, string?>? uploadState = null, int failUpload = 0)
+    {
+        if (r.Header("Authorization") != "Bearer " + AccessToken)
+            return FakeNetwork.Json(HttpStatusCode.Unauthorized, new { title = "Unauthorized", status = 401 });
+        switch (r.Uri.AbsolutePath)
+        {
+            case "/2/media/upload" when r.Method == HttpMethod.Post:
+                var n = ++_uploads;
+                if (n == failUpload)
+                    return FakeNetwork.Json(HttpStatusCode.BadRequest, new { title = "Invalid Request", detail = "Media type unrecognized.", status = 400 });
+                var state = uploadState?.Invoke(n);
+                object data = state is null
+                    ? new { id = $"9{n}", expires_after_secs = 86400 }
+                    : new { id = $"9{n}", expires_after_secs = 86400, processing_info = new { state, check_after_secs = 1 } };
+                return FakeNetwork.Json(HttpStatusCode.OK, new { data });
+            case "/2/media/upload":
+                return FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = "91", processing_info = new { state = "succeeded", progress_percent = 100 } } });
+            case "/2/media/metadata":
+                return FakeNetwork.Json(HttpStatusCode.OK, new { data = new { id = r.Json.GetProperty("id").GetString(), associated_metadata = true } });
+            case "/2/tweets":
+                return FakeNetwork.Json(HttpStatusCode.Created, new { data = new { id = "1860000000000000002", text = "…" } });
+            default:
+                return FakeNetwork.Json(HttpStatusCode.NotFound, new { title = "Not Found" });
+        }
+    }
+
+    private int _uploads;
+
+    private static SocialImage Picture(int n) => new() { Bytes = Pictures.Png(200 + n), ContentType = "image/png", Alt = $"Map {n}" };
+
+    [Fact]
+    public async Task Pictures_upload_as_media_with_their_alt_text_and_go_on_the_post_as_media_ids()
+    {
+        _host.Network.Respond = r => XWithMedia(r);
+        var result = await Channel().PostAsync(Post() with { Images = [Picture(1), Picture(2)] });
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal(["POST /2/media/upload", "POST /2/media/metadata", "POST /2/media/upload", "POST /2/media/metadata", "POST /2/tweets"],
+            _host.Network.Seen.Select(s => $"{s.Method} {s.Uri.AbsolutePath}"));
+        var upload = _host.Network.Seen[0];
+        Assert.Equal("multipart/form-data", upload.ContentType);
+        Assert.Contains("name=media; filename=picture.png", upload.Text, StringComparison.Ordinal);
+        Assert.Contains("tweet_image", upload.Text, StringComparison.Ordinal);
+        var alt = _host.Network.Seen[1].Json;
+        Assert.Equal("91", alt.GetProperty("id").GetString());
+        Assert.Equal("Map 1", alt.GetProperty("metadata").GetProperty("alt_text").GetProperty("text").GetString());
+        var tweet = _host.Network.Seen[^1].Json;
+        Assert.Equal(["91", "92"], tweet.GetProperty("media").GetProperty("media_ids").EnumerateArray().Select(m => m.GetString()));
+        Assert.Contains("https://blog.example.com/posts/lorebook", tweet.GetProperty("text").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_animated_gif_goes_as_tweet_gif_and_waits_for_processing()
+    {
+        _host.Network.Respond = r => XWithMedia(r, uploadState: _ => "pending");
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        var account = new XAccount(AccessToken) { MediaPollInterval = TimeSpan.FromMilliseconds(1) };
+        var result = await _host.Channels.X(account).PostAsync(Post() with { Images = [gif] });
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Contains("tweet_gif", _host.Network.Seen[0].Text, StringComparison.Ordinal);
+        var status = _host.Network.Seen[1];
+        Assert.Equal(HttpMethod.Get, status.Method);
+        Assert.Equal("?command=STATUS&media_id=91", status.Uri.Query);
+    }
+
+    [Fact]
+    public async Task A_picture_refused_halfway_posts_nothing_and_says_the_uploaded_ones_expire()
+    {
+        _host.Network.Respond = r => XWithMedia(r, failUpload: 2);
+        var result = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1), Picture(2)] });
+
+        Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.StartsWith("Picture 2 of 2 didn't upload", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Media type unrecognized", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("expire unused", result.Failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/2/tweets");
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+    }
+
+    [Fact]
+    public void Picture_limits_are_xs_and_refused_in_compose()
+    {
+        var channel = Channel();
+        Assert.Contains("at most 4", Assert.Single(channel.Compose(Post() with { Images = [Picture(1), Picture(2), Picture(3), Picture(4), Picture(5)] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("5,000,000", Assert.Single(channel.Compose(Post() with { Images = [Picture(1) with { Bytes = Pictures.Png(5_000_001) }] }).Problems), StringComparison.Ordinal);
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        Assert.Contains("goes alone", Assert.Single(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("1000", Assert.Single(channel.Compose(Post() with { Images = [Picture(1) with { Alt = new string('a', 1001) }] }).Problems), StringComparison.Ordinal);
     }
 }

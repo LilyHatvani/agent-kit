@@ -27,7 +27,7 @@ public sealed class BlueskyAccount(string identifier, string appPassword)
         string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("A value is required.", name) : value.Trim();
 }
 
-/// <summary>A Mastodon account: an instance and an access token with the <c>write:statuses</c> scope (and <c>write:media</c> for a card picture).</summary>
+/// <summary>A Mastodon account: an instance and an access token with the <c>write:statuses</c> and <c>write:media</c> scopes.</summary>
 /// <param name="instance">The instance's https address, e.g. <c>https://mastodon.social</c>.</param>
 /// <param name="accessToken">The access token (Preferences, Development, an application's token).</param>
 public sealed class MastodonAccount(Uri instance, string accessToken)
@@ -47,11 +47,23 @@ public sealed class MastodonAccount(Uri instance, string accessToken)
     /// <summary><c>public</c>, <c>unlisted</c>, <c>private</c> or <c>direct</c>.</summary>
     public string Visibility { get; init; } = "public";
 
+    /// <summary>Pictures per status (<c>configuration.statuses.max_media_attachments</c>); 4 is Mastodon's default.</summary>
+    public int MaxMediaAttachments { get; init; } = 4;
+
+    /// <summary>Bytes per picture (<c>configuration.media_attachments.image_size_limit</c>); 16 MiB is Mastodon's default.</summary>
+    public long ImageSizeLimit { get; init; } = 16 * 1024 * 1024;
+
     /// <summary>
-    /// Whether the card picture is uploaded and attached. Off by default: the instance builds the link card from the
-    /// page itself, and a status with media shows the media instead of the card.
+    /// Bytes for an animated GIF, which the instance turns into a video (<c>configuration.media_attachments.video_size_limit</c>);
+    /// 99 MiB is Mastodon's default.
     /// </summary>
-    public bool AttachCardImage { get; init; }
+    public long VideoSizeLimit { get; init; } = 99 * 1024 * 1024;
+
+    /// <summary>How long to wait between checks on a picture the instance is still processing (answered 202).</summary>
+    public TimeSpan MediaPollInterval { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>How many checks before a picture still processing fails the post.</summary>
+    public int MediaPollAttempts { get; init; } = 30;
 
     /// <inheritdoc />
     public override string ToString() => $"Mastodon at {Instance.Host} (token hidden)";
@@ -97,18 +109,59 @@ public sealed class DiscordBotChannel(string botToken, string channelId)
     public override string ToString() => $"Discord bot in channel {ChannelId} (token hidden)";
 }
 
-/// <summary>An X account: an OAuth 2.0 user access token with <c>tweet.read</c>, <c>tweet.write</c> and <c>users.read</c>.</summary>
-/// <param name="accessToken">The user access token. It expires after two hours; <see cref="SocialChannels.RefreshXTokenAsync"/> gets a new one.</param>
-public sealed class XAccount(string accessToken)
+/// <summary>
+/// An X account, in user context, one of two ways:
+/// <list type="bullet">
+/// <item><b>OAuth 1.0a</b> (<see cref="XAccount(string, string, string, string)"/>): the developer app's API key and
+/// secret plus the posting account's access token and secret, as the developer portal hands them out for the app
+/// owner's own account. They don't expire; the app needs Read and write permission before its access token is made.
+/// Every request is signed (HMAC-SHA1, RFC 5849).</item>
+/// <item><b>OAuth 2.0</b> (<see cref="XAccount(string)"/>): a user access token from the PKCE flow with
+/// <c>tweet.read tweet.write users.read media.write</c>. It expires after two hours;
+/// <see cref="SocialChannels.RefreshXTokenAsync"/> gets a new one.</item>
+/// </list>
+/// </summary>
+public sealed class XAccount
 {
-    /// <summary>The user access token.</summary>
-    public string AccessToken { get; } = BlueskyAccount.Required(accessToken, nameof(accessToken));
+    /// <summary>An OAuth 2.0 user access token.</summary>
+    public XAccount(string accessToken)
+    {
+        AccessToken = BlueskyAccount.Required(accessToken, nameof(accessToken));
+    }
+
+    /// <summary>The four OAuth 1.0a values: the app's API key (consumer key) and secret, the account's access token and secret.</summary>
+    public XAccount(string apiKey, string apiKeySecret, string accessToken, string accessTokenSecret)
+    {
+        ApiKey = BlueskyAccount.Required(apiKey, nameof(apiKey));
+        ApiKeySecret = BlueskyAccount.Required(apiKeySecret, nameof(apiKeySecret));
+        AccessToken = BlueskyAccount.Required(accessToken, nameof(accessToken));
+        AccessTokenSecret = BlueskyAccount.Required(accessTokenSecret, nameof(accessTokenSecret));
+    }
+
+    /// <summary>The access token: OAuth 2.0's bearer, or OAuth 1.0a's <c>oauth_token</c>.</summary>
+    public string AccessToken { get; }
+
+    /// <summary>OAuth 1.0a: the app's API key (consumer key); null for OAuth 2.0.</summary>
+    public string? ApiKey { get; }
+
+    internal string? ApiKeySecret { get; }
+
+    internal string? AccessTokenSecret { get; }
+
+    /// <summary>Whether requests are signed with OAuth 1.0a rather than sent with a bearer token.</summary>
+    public bool IsOAuth1 => ApiKey is not null;
 
     /// <summary>The weighted length a post may have: 280, more only for an X Premium account.</summary>
     public int MaxWeightedLength { get; init; } = 280;
 
+    /// <summary>How long to wait between checks on an upload X is still processing (an animated GIF).</summary>
+    public TimeSpan MediaPollInterval { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>How many checks before an upload still processing fails the post.</summary>
+    public int MediaPollAttempts { get; init; } = 30;
+
     /// <inheritdoc />
-    public override string ToString() => "X user token (hidden)";
+    public override string ToString() => IsOAuth1 ? "X OAuth 1.0a (keys hidden)" : "X user token (hidden)";
 }
 
 /// <summary>The X app that refreshes a user's token: its OAuth 2.0 client id, and its secret for a confidential client.</summary>

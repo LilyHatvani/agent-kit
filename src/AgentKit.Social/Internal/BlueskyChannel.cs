@@ -29,6 +29,9 @@ internal sealed class BlueskyChannel : ChannelBase
     private const int MaxTagGraphemes = 64;
     private const string Collection = "app.bsky.feed.post";
 
+    /// <summary>app.bsky.embed.images: at most 4, each blob at most 2,000,000 bytes; a GIF would show as a still.</summary>
+    private static readonly MediaRules Pictures = new(4, 2_000_000, int.MaxValue, AnimatedGifRule.Refused, 0);
+
     private readonly BlueskyAccount _account;
     private readonly string _sessionKey;
 
@@ -42,7 +45,10 @@ internal sealed class BlueskyChannel : ChannelBase
 
     public override string Network => SocialNetworks.Bluesky;
 
-    public override string Id => "bluesky:" + _account.Identifier;
+    /// <summary>The handle or DID; an email identifier is not written into ids and logs, only a hash of it.</summary>
+    public override string Id => _account.Identifier.Contains('@', StringComparison.Ordinal)
+        ? "bluesky:email-" + Hash(_account.Identifier.ToUpperInvariant(), 12)
+        : "bluesky:" + _account.Identifier;
 
     public override SocialIdempotency Idempotency { get; } = new(SocialIdempotencyKind.ReRead, null,
         "The record key is chosen before sending, so a retry reads it back first and never posts twice.");
@@ -53,15 +59,18 @@ internal sealed class BlueskyChannel : ChannelBase
     {
         ArgumentNullException.ThrowIfNull(post);
         var tags = TextRules.NormalizeTags(post.Tags);
-        var text = TextRules.Assemble(post.Text, post.Link, post.Link is null ? null : TextRules.ShortLink(post.Link), tags);
-        var problems = new List<string>(CardProblems(post));
+        var link = UsableLink(post);
+        var text = TextRules.Assemble(post.Text, link, link is null ? null : TextRules.ShortLink(link), tags);
+        var problems = new List<string>(LinkProblems(post));
+        problems.AddRange(CardProblems(post));
+        problems.AddRange(ImageProblems(post, Pictures));
         var length = TextRules.Graphemes(text);
         if (length > MaxGraphemes) problems.Add($"The post is {length} characters and Bluesky takes {MaxGraphemes}.");
         var bytes = Encoding.UTF8.GetByteCount(text);
         if (bytes > MaxBytes) problems.Add($"The post is {bytes} bytes and Bluesky takes {MaxBytes}.");
         foreach (var t in tags.Where(t => TextRules.Graphemes(t) > MaxTagGraphemes))
             problems.Add($"The tag #{t[..Math.Min(t.Length, 20)]}… is longer than Bluesky's {MaxTagGraphemes} characters.");
-        if (text.Length == 0 && post.Card is null) problems.Add("The post is empty.");
+        if (text.Length == 0 && post.Card is null && post.Images.Count == 0) problems.Add("The post is empty.");
         return new SocialComposition(text, length, MaxGraphemes, "graphemes", problems);
     }
 
@@ -75,8 +84,35 @@ internal sealed class BlueskyChannel : ChannelBase
             if (found is not null) return found;
         }
 
+        // Pictures first, each its own blob; one that doesn't upload stops the post, so none goes out short of a picture.
+        var images = new JsonArray();
+        for (var i = 0; i < post.Images.Count; i++)
+        {
+            var picture = post.Images[i];
+            var (uploaded, uploadFailure) = await XrpcAsync(s =>
+            {
+                var r = new HttpRequestMessage(HttpMethod.Post, Xrpc("com.atproto.repo.uploadBlob")) { Content = new ReadOnlyMemoryContent(picture.Bytes) };
+                r.Content.Headers.ContentType = new MediaTypeHeaderValue(NormalType(picture));
+                return r;
+            }, ct).ConfigureAwait(false);
+            using (uploaded)
+            {
+                if (uploaded is not null && Prop(uploaded.RootElement, "blob") is { ValueKind: JsonValueKind.Object } blob)
+                {
+                    images.Add(new JsonObject { ["alt"] = picture.Alt, ["image"] = JsonNode.Parse(blob.GetRawText()) });
+                    continue;
+                }
+            }
+            var why = uploadFailure ?? new SocialFailure(SocialFailureKind.Transient, "Bluesky's answer had no blob.");
+            return SocialPostResult.Failed(why with
+            {
+                Message = Invariant($"Picture {i + 1} of {post.Images.Count} didn't upload ({why.Message}). Nothing was posted; Bluesky deletes the pictures already uploaded once no post uses them."),
+                MayHavePosted = false,
+            });
+        }
+
         JsonNode? thumb = null;
-        if (post.Link is not null && post.Card is not null
+        if (post.Images.Count == 0 && post.Link is not null && post.Card is not null
             && await LoadCardImageAsync(post.Card, MaxThumb, notes, ct).ConfigureAwait(false) is { } image)
         {
             var (blob, blobFailure) = await XrpcAsync(s =>
@@ -85,7 +121,7 @@ internal sealed class BlueskyChannel : ChannelBase
                 r.Content.Headers.ContentType = new MediaTypeHeaderValue(image.ContentType);
                 return r;
             }, ct).ConfigureAwait(false);
-            if (blob?.RootElement.TryGetProperty("blob", out var b) == true) thumb = JsonNode.Parse(b.GetRawText());
+            if (blob is not null && Prop(blob.RootElement, "blob") is { ValueKind: JsonValueKind.Object } b) thumb = JsonNode.Parse(b.GetRawText());
             else notes.Add($"The card picture didn't upload ({blobFailure?.Message ?? "no blob in the answer"}), so the card has no picture.");
             blob?.Dispose();
         }
@@ -97,7 +133,7 @@ internal sealed class BlueskyChannel : ChannelBase
                 ["repo"] = s.Did,
                 ["collection"] = Collection,
                 ["rkey"] = attempt.Token,
-                ["record"] = Record(post, composed.Text, thumb),
+                ["record"] = Record(post, composed.Text, thumb, images),
             }),
         }, ct).ConfigureAwait(false);
         using (created)
@@ -107,7 +143,8 @@ internal sealed class BlueskyChannel : ChannelBase
         }
 
         // A resumed attempt that the read-back missed may have landed meanwhile (its record key is taken): look again.
-        if (attempt.Resuming && createFailure is { Kind: SocialFailureKind.Rejected })
+        // The reference PDS answers a taken record key with a 500, not a 4xx, so any failure but the credentials looks again.
+        if (attempt.Resuming && createFailure is { Kind: not SocialFailureKind.Auth and not SocialFailureKind.RateLimited })
         {
             var (found, _) = await ReadBackAsync(attempt.Token, ct).ConfigureAwait(false);
             if (found is not null) return found;
@@ -133,7 +170,7 @@ internal sealed class BlueskyChannel : ChannelBase
         }
     }
 
-    private JsonObject Record(SocialPost post, string text, JsonNode? thumb)
+    private JsonObject Record(SocialPost post, string text, JsonNode? thumb, JsonArray images)
     {
         var record = new JsonObject
         {
@@ -144,7 +181,11 @@ internal sealed class BlueskyChannel : ChannelBase
         if (!string.IsNullOrWhiteSpace(post.Language)) record["langs"] = new JsonArray(post.Language);
         var facets = Facets(post, text);
         if (facets.Count > 0) record["facets"] = facets;
-        if (post.Link is not null && post.Card is not null)
+        if (images.Count > 0)
+        {
+            record["embed"] = new JsonObject { ["$type"] = "app.bsky.embed.images", ["images"] = images };
+        }
+        else if (post.Link is not null && post.Card is not null)
         {
             var external = new JsonObject
             {
@@ -228,6 +269,7 @@ internal sealed class BlueskyChannel : ChannelBase
         if (Context.Sessions.Get(_sessionKey) is { } cached)
         {
             AddSecret(cached.AccessJwt);
+            AddSecret(cached.RefreshJwt);
             return (cached, null);
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, Xrpc("com.atproto.server.createSession"))
@@ -253,7 +295,7 @@ internal sealed class BlueskyChannel : ChannelBase
             return (null, new SocialFailure(SocialFailureKind.Transient, "Bluesky's sign-in answer had no session."));
         AddSecret(access);
         AddSecret(Str(doc.RootElement, "refreshJwt"));
-        var session = new BlueskySession(access, did, Str(doc.RootElement, "handle") ?? did);
+        var session = new BlueskySession(access, Str(doc.RootElement, "refreshJwt"), did, Str(doc.RootElement, "handle") ?? did);
         Context.Sessions.Set(_sessionKey, session);
         return (session, null);
     }

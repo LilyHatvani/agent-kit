@@ -129,7 +129,7 @@ public sealed class PublisherTests : IDisposable
         ISocialChannel[] channels =
         [
             _host.Channels.Bluesky(new BlueskyAccount("a.bsky.social", "pass-word")),
-            _host.Channels.Mastodon(new MastodonAccount(new Uri("https://m.example"), "token-1") { AttachCardImage = true }),
+            _host.Channels.Mastodon(new MastodonAccount(new Uri("https://m.example"), "token-1")),
             _host.Channels.Discord(new DiscordWebhook(new Uri("https://discord.com/api/webhooks/1/abcdefghijklmnop"))),
             X(),
         ];
@@ -184,7 +184,7 @@ public sealed class SecretsTests : IDisposable
     private const string WebhookToken = "webhook-SECRET3-token-abcdef";
     private const string BotToken = "bot-SECRET4-token";
     private const string XToken = "x-SECRET5-token";
-    private static readonly string[] All = [AppPassword, MastodonToken, WebhookToken, BotToken, XToken, "SECRET"];
+    private static readonly string[] All = [AppPassword, MastodonToken, WebhookToken, BotToken, XToken, "x-keysecret-SECRET8", "x-tokensecret-SECRETA", "SECRET"];
     private readonly TestHost _host = new();
 
     public void Dispose() => _host.Dispose();
@@ -196,6 +196,7 @@ public sealed class SecretsTests : IDisposable
         _host.Channels.Discord(new DiscordWebhook(new Uri($"https://discord.com/api/webhooks/42/{WebhookToken}"))),
         _host.Channels.Discord(new DiscordBotChannel(BotToken, "777")),
         _host.Channels.X(new XAccount(XToken)),
+        _host.Channels.X(new XAccount("x-key-SECRET7", "x-keysecret-SECRET8", "x-token-SECRET9", "x-tokensecret-SECRETA")),
     ];
 
     private static SocialPost Post() => new() { Text = "Hello", Link = new Uri("https://blog.example.com/p"), IdempotencyKey = "k" };

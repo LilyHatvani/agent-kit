@@ -75,8 +75,10 @@ internal abstract class ChannelBase : ISocialChannel
             {
                 throw;
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or TimeoutException or JsonException)
+            catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
+                // Anything a network's answer (or a handler the host added) can provoke is a result, never a throw. What
+                // isn't a known transport failure is an answer that couldn't be read: the post may be up.
                 result = SocialPostResult.Failed(FromException(e));
             }
         }
@@ -87,16 +89,102 @@ internal abstract class ChannelBase : ISocialChannel
         return result;
     }
 
+    /// <summary>The post's link when it is an absolute http(s) address; null otherwise (and <see cref="LinkProblems"/> says so).</summary>
+    protected static Uri? UsableLink(SocialPost post) =>
+        post.Link is { IsAbsoluteUri: true } link && (link.Scheme == Uri.UriSchemeHttps || link.Scheme == Uri.UriSchemeHttp) ? link : null;
+
+    /// <summary>A link that isn't an absolute http(s) address.</summary>
+    protected static IEnumerable<string> LinkProblems(SocialPost post)
+    {
+        ArgumentNullException.ThrowIfNull(post);
+        if (post.Link is not null && UsableLink(post) is null) yield return "The link must be an absolute http or https address.";
+    }
+
+    /// <summary>A property of a JSON object, or null when the element isn't an object or lacks it.</summary>
+    protected static JsonElement? Prop(JsonElement e, string name) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) ? v : null;
+
+    /// <summary>A number property, or null when it is absent or not a number.</summary>
+    protected static double? Number(JsonElement e, string name) =>
+        Prop(e, name) is { ValueKind: JsonValueKind.Number } v && v.TryGetDouble(out var d) && double.IsFinite(d) ? d : null;
+
     /// <summary>What every network refuses in a card: a card without the link it previews, a picture type that isn't an image type.</summary>
     protected static IEnumerable<string> CardProblems(SocialPost post)
     {
         ArgumentNullException.ThrowIfNull(post);
-        if (post.Card is null) yield break;
+        if (post.Card is null || post.Images.Count > 0) yield break;
         if (post.Link is null) yield return "A card needs the link it previews.";
-        if (post.Card.ImageContentType is { } type
-            && (!MediaTypeHeaderValue.TryParse(type, out var parsed) || parsed.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true))
-            yield return "The card picture's media type must be an image type, such as image/png.";
+        if (post.Card.ImageContentType is { } type && NormalImageType(type) is null)
+            yield return "The card picture's media type must be image/png, image/jpeg, image/gif or image/webp.";
     }
+
+    /// <summary>One of the four picture types every network takes, written plainly; null for anything else.</summary>
+    protected static string? NormalImageType(string? type) => (type ?? "").Trim().ToUpperInvariant() switch
+    {
+        "IMAGE/PNG" => "image/png",
+        "IMAGE/JPEG" or "IMAGE/JPG" => "image/jpeg",
+        "IMAGE/GIF" => "image/gif",
+        "IMAGE/WEBP" => "image/webp",
+        _ => null,
+    };
+
+    /// <summary>What stops this network taking the post's pictures, each a sentence naming the picture and the limit.</summary>
+    protected IEnumerable<string> ImageProblems(SocialPost post, MediaRules rules)
+    {
+        ArgumentNullException.ThrowIfNull(post);
+        var images = post.Images ?? [];
+        if (images.Count > rules.MaxCount)
+            yield return Invariant($"{Name} takes at most {rules.MaxCount} pictures in a post; this one has {images.Count}.");
+        for (var i = 0; i < images.Count; i++)
+        {
+            var image = images[i];
+            var n = i + 1;
+            if (image is null)
+            {
+                yield return Invariant($"Picture {n} is missing.");
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(image.Alt))
+                yield return Invariant($"Picture {n} has no alt text: say what it shows, for people who can't see it.");
+            else if (image.Alt.Length > rules.MaxAlt)
+                yield return Invariant($"Picture {n}'s alt text is {image.Alt.Length} characters and {Name} takes {rules.MaxAlt}.");
+            var type = NormalImageType(image.ContentType);
+            if (image.Bytes.IsEmpty)
+            {
+                yield return Invariant($"Picture {n} is empty.");
+                continue;
+            }
+            if (type is null)
+            {
+                yield return Invariant($"Picture {n} is {image.ContentType}; {Name} takes PNG, JPEG, GIF and WebP.");
+                continue;
+            }
+            if (type == "image/gif" && Media.IsAnimatedGif(image.Bytes.Span))
+            {
+                switch (rules.AnimatedGif)
+                {
+                    case AnimatedGifRule.Refused:
+                        yield return Invariant($"Picture {n} is an animated GIF, which {Name} shows as a still: post a still picture instead.");
+                        continue;
+                    case AnimatedGifRule.Alone when images.Count > 1:
+                        yield return Invariant($"Picture {n} is an animated GIF, which goes alone in a {Name} post; this one has {images.Count} pictures.");
+                        break;
+                }
+                if (image.Bytes.Length > rules.MaxAnimatedGifBytes)
+                    yield return Invariant($"Picture {n} is an animated GIF of {image.Bytes.Length:N0} bytes and {Name} takes {rules.MaxAnimatedGifBytes:N0}.");
+                continue;
+            }
+            if (image.Bytes.Length > rules.MaxBytes)
+                yield return Invariant($"Picture {n} is {image.Bytes.Length:N0} bytes and {Name} takes {rules.MaxBytes:N0}.");
+        }
+        if (rules.MaxTotalBytes is { } total && images.Where(x => x is not null).Sum(x => (long)x.Bytes.Length) > total)
+            yield return Invariant($"The pictures come to more than {total:N0} bytes, which {Name} takes in one post.");
+    }
+
+    protected static string Invariant(FormattableString s) => FormattableString.Invariant(s);
+
+    /// <summary>The picture's media type, written the way the networks expect.</summary>
+    protected static string NormalType(SocialImage image) => NormalImageType(image.ContentType) ?? "image/png";
 
     /// <summary>Sends a post that fits. Expected failures come back as results; transport ones may throw for the caller to map.</summary>
     protected abstract Task<SocialPostResult> SendComposedAsync(SocialPost post, SocialComposition composed, SocialAttempt attempt, CancellationToken ct);
@@ -161,24 +249,34 @@ internal abstract class ChannelBase : ISocialChannel
         var now = Now;
         if (response.Headers.RetryAfter is { } ra)
         {
-            if (ra.Delta is { } d) return d;
+            if (ra.Delta is { } d) return Positive(d);
             if (ra.Date is { } date) return Positive(date - now);
         }
         if (Header(response, "X-RateLimit-Reset-After") is { } after
             && double.TryParse(after, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-            return Positive(TimeSpan.FromSeconds(seconds));
+            return Wait(seconds);
         foreach (var name in new[] { "ratelimit-reset", "x-rate-limit-reset", "X-RateLimit-Reset" })
         {
             if (Header(response, name) is not { } value) continue;
-            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch) && epoch > 1_000_000_000)
-                return Positive(DateTimeOffset.FromUnixTimeMilliseconds((long)(epoch * 1000)) - now);
+            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch) && double.IsFinite(epoch) && epoch > 1_000_000_000)
+            {
+                // Unix seconds, or milliseconds from a server that writes those.
+                var unixSeconds = epoch > 100_000_000_000 ? epoch / 1000 : epoch;
+                return Wait(unixSeconds - (now - DateTimeOffset.UnixEpoch).TotalSeconds);
+            }
             if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at))
                 return Positive(at - now);
         }
         return null;
     }
 
-    private static TimeSpan Positive(TimeSpan t) => t < TimeSpan.Zero ? TimeSpan.Zero : t;
+    private static TimeSpan Positive(TimeSpan t) => t < TimeSpan.Zero ? TimeSpan.Zero : t > MaxWait ? MaxWait : t;
+
+    /// <summary>A wait in seconds, kept between none and a day: a header saying more (or nonsense) is not believed.</summary>
+    private static TimeSpan? Wait(double seconds) =>
+        !double.IsFinite(seconds) ? null : seconds <= 0 ? TimeSpan.Zero : seconds >= MaxWait.TotalSeconds ? MaxWait : TimeSpan.FromSeconds(seconds);
+
+    private static readonly TimeSpan MaxWait = TimeSpan.FromDays(1);
 
     private static string? Header(HttpResponseMessage response, string name) =>
         response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
@@ -197,9 +295,15 @@ internal abstract class ChannelBase : ISocialChannel
     }
 
     /// <summary>Reads a JSON body, or null when it isn't JSON.</summary>
+    /// <remarks>
+    /// HttpClient has already buffered the body (ResponseContentRead), so this reads memory: it ignores the caller's token,
+    /// because an answer that arrived is never thrown away by a cancel that came after it.
+    /// </remarks>
+#pragma warning disable IDE0060 // the token stays in the signature for the call sites' symmetry
     protected static async Task<JsonDocument?> ReadJsonAsync(HttpResponseMessage response, CancellationToken ct)
+#pragma warning restore IDE0060
     {
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var bytes = await response.Content.ReadAsByteArrayAsync(CancellationToken.None).ConfigureAwait(false);
         if (bytes.Length == 0) return null;
         try { return JsonDocument.Parse(bytes); }
         catch (JsonException) { return null; }
@@ -222,7 +326,7 @@ internal abstract class ChannelBase : ISocialChannel
                 notes.Add(string.Create(CultureInfo.InvariantCulture, $"The card picture is {card.Image.Length:N0} bytes and {Name} takes {maxBytes:N0}, so the card has no picture."));
                 return null;
             }
-            var type = card.ImageContentType ?? Sniff(card.Image.Span);
+            var type = card.ImageContentType is { } given ? NormalImageType(given) : Sniff(card.Image.Span);
             if (type is null)
             {
                 notes.Add("The card picture isn't a PNG, JPEG, GIF or WebP, so the card has no picture.");
@@ -256,7 +360,7 @@ internal abstract class ChannelBase : ISocialChannel
                 notes.Add(string.Create(CultureInfo.InvariantCulture, $"The card picture is over {maxBytes:N0} bytes, which {Name} takes at most, so the card has no picture."));
                 return null;
             }
-            var type = response.Content.Headers.ContentType?.MediaType is { } t && t.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ? t : Sniff(bytes);
+            var type = NormalImageType(response.Content.Headers.ContentType?.MediaType) ?? Sniff(bytes);
             if (type is null)
             {
                 notes.Add("The card picture's address didn't give a picture, so the card has no picture.");

@@ -28,7 +28,15 @@ internal sealed class DiscordChannel : ChannelBase
     private const int MaxContent = 2000;
     private const int MaxTitle = 256;
     private const int MaxDescription = 4096;
-    private const int MaxFile = 8_000_000;
+    private const int MaxFile = 20 * 1024 * 1024;
+    private const int MaxAlt = 1024;
+    private const int SuppressEmbeds = 1 << 2;
+
+    /// <summary>
+    /// 20 MiB a file and 25 MiB a request (https://docs.discord.com/developers/reference, /resources/message), alt text
+    /// 1024; 10 files a message is Discord's long-standing limit, not stated on those pages.
+    /// </summary>
+    private static readonly MediaRules Pictures = new(10, MaxFile, MaxAlt, AnimatedGifRule.Allowed, MaxFile, MaxTotalBytes: 25 * 1024 * 1024);
 
     /// <summary>"The past few minutes": two is what a resend counts on.</summary>
     private static readonly TimeSpan NonceWindow = TimeSpan.FromMinutes(2);
@@ -64,12 +72,16 @@ internal sealed class DiscordChannel : ChannelBase
     public override SocialComposition Compose(SocialPost post)
     {
         ArgumentNullException.ThrowIfNull(post);
-        // With a card the link is the embed's; without one it goes in the text and Discord unfurls it. Hashtags mean
-        // nothing on Discord, so they are left out.
-        var text = TextRules.Assemble(post.Text, post.Card is null ? post.Link : null, post.Link?.AbsoluteUri, [], includeTags: false);
-        var problems = new List<string>(CardProblems(post));
+        var link = UsableLink(post);
+        // With a card (and no pictures) the link is the embed's; otherwise it goes in the text. Hashtags mean nothing on
+        // Discord, so they are left out.
+        var cardEmbed = post.Card is not null && post.Images.Count == 0;
+        var text = TextRules.Assemble(post.Text, cardEmbed ? null : link, link?.AbsoluteUri, [], includeTags: false);
+        var problems = new List<string>(LinkProblems(post));
+        problems.AddRange(CardProblems(post));
+        problems.AddRange(ImageProblems(post, Pictures));
         if (text.Length > MaxContent) problems.Add($"The post is {text.Length} characters and Discord takes {MaxContent}.");
-        if (text.Length == 0 && post.Card is null) problems.Add("The post is empty.");
+        if (text.Length == 0 && post.Card is null && post.Images.Count == 0) problems.Add("The post is empty.");
         return new SocialComposition(text, text.Length, MaxContent, "characters", problems);
     }
 
@@ -86,9 +98,24 @@ internal sealed class DiscordChannel : ChannelBase
             ["content"] = composed.Text,
             ["allowed_mentions"] = new JsonObject { ["parse"] = new JsonArray() },
         };
-        (byte[] Bytes, string ContentType)? file = null;
-        string? fileName = null;
-        if (post.Card is { } card && post.Link is { } link)
+        var files = new List<(ReadOnlyMemory<byte> Bytes, string ContentType, string Name)>();
+        if (post.Images.Count > 0)
+        {
+            // The pictures are the message's own attachments, in one request with it, so there is never a message short
+            // of a picture. SUPPRESS_EMBEDS keeps Discord from unfurling the link into a card under them.
+            var attachments = new JsonArray();
+            for (var i = 0; i < post.Images.Count; i++)
+            {
+                var image = post.Images[i];
+                var type = NormalType(image);
+                var name = Invariant($"picture-{i + 1}.{Extension(type)}");
+                files.Add((image.Bytes, type, name));
+                attachments.Add(new JsonObject { ["id"] = i, ["filename"] = name, ["description"] = image.Alt });
+            }
+            payload["attachments"] = attachments;
+            payload["flags"] = SuppressEmbeds;
+        }
+        else if (post.Card is { } card && UsableLink(post) is { } link)
         {
             var embed = new JsonObject
             {
@@ -96,19 +123,23 @@ internal sealed class DiscordChannel : ChannelBase
                 ["url"] = link.AbsoluteUri,
             };
             if (card.Description.Length > 0) embed["description"] = TextRules.Cut(card.Description, MaxDescription);
+            // Echo of Dreams' announcement embed carries these three; Discord's embed object takes them as is.
+            if (card.Accent is { } accent) embed["color"] = accent & 0xFFFFFF;
+            if (!string.IsNullOrWhiteSpace(card.Footer)) embed["footer"] = new JsonObject { ["text"] = TextRules.Cut(card.Footer, 2048) };
+            if (card.PublishedAt is { } at) embed["timestamp"] = at.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
             if (!card.Image.IsEmpty)
             {
-                file = await LoadCardImageAsync(card, MaxFile, notes, ct).ConfigureAwait(false);
-                if (file is { } f)
+                if (await LoadCardImageAsync(card, MaxFile, notes, ct).ConfigureAwait(false) is { } f)
                 {
-                    fileName = "card." + Extension(f.ContentType);
-                    embed["image"] = new JsonObject { ["url"] = "attachment://" + fileName };
-                    var attachment = new JsonObject { ["id"] = 0, ["filename"] = fileName };
-                    if (!string.IsNullOrWhiteSpace(card.ImageAlt)) attachment["description"] = TextRules.Cut(card.ImageAlt, 1024);
+                    var name = "card." + Extension(f.ContentType);
+                    files.Add((f.Bytes, f.ContentType, name));
+                    embed["image"] = new JsonObject { ["url"] = "attachment://" + name };
+                    var attachment = new JsonObject { ["id"] = 0, ["filename"] = name };
+                    if (!string.IsNullOrWhiteSpace(card.ImageAlt)) attachment["description"] = TextRules.Cut(card.ImageAlt, MaxAlt);
                     payload["attachments"] = new JsonArray(attachment);
                 }
             }
-            else if (card.ImageUrl is { } imageUrl)
+            else if (card.ImageUrl is { IsAbsoluteUri: true } imageUrl)
             {
                 embed["image"] = new JsonObject { ["url"] = imageUrl.AbsoluteUri };
             }
@@ -119,7 +150,7 @@ internal sealed class DiscordChannel : ChannelBase
         if (_webhook is not null)
         {
             if (_webhook.Username is { } name) payload["username"] = name;
-            if (_webhook.AvatarUrl is { } avatar) payload["avatar_url"] = avatar.AbsoluteUri;
+            if (_webhook.AvatarUrl is { IsAbsoluteUri: true } avatar) payload["avatar_url"] = avatar.AbsoluteUri;
             endpoint = new Uri($"{ApiBase}/webhooks/{_webhook.WebhookId}/{_webhook.Token}?wait=true");
         }
         else
@@ -130,12 +161,15 @@ internal sealed class DiscordChannel : ChannelBase
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        if (file is { } image)
+        if (files.Count > 0)
         {
             var form = new MultipartFormDataContent { { new StringContent(payload.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), "payload_json" } };
-            var part = new ByteArrayContent(image.Bytes);
-            part.Headers.ContentType = new MediaTypeHeaderValue(image.ContentType);
-            form.Add(part, "files[0]", fileName!);
+            for (var i = 0; i < files.Count; i++)
+            {
+                var part = new ReadOnlyMemoryContent(files[i].Bytes);
+                part.Headers.ContentType = new MediaTypeHeaderValue(files[i].ContentType);
+                form.Add(part, Invariant($"files[{i}]"), files[i].Name);
+            }
             request.Content = form;
         }
         else
@@ -150,15 +184,20 @@ internal sealed class DiscordChannel : ChannelBase
             return SocialPostResult.Failed(SocialFailureKind.Transient, "Discord's answer had no message id.", mayHavePosted: true);
         var channelId = Str(doc.RootElement, "channel_id") ?? _bot?.ChannelId;
 
+        // The message is up: what follows must not lose that answer, so it runs on its own short deadline rather than
+        // the caller's token (a cancel now would leave the attempt pending, and a webhook could then never confirm it).
+        using var after = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         if (_bot is { Crosspost: true })
-            await CrosspostAsync(messageId, notes, ct).ConfigureAwait(false);
+            await CrosspostAsync(messageId, notes, after.Token).ConfigureAwait(false);
 
         Uri? url = null;
-        var guild = Str(doc.RootElement, "guild_id") ?? await GuildAsync(ct).ConfigureAwait(false);
-        if (guild is not null && channelId is not null) url = new Uri($"https://discord.com/channels/{guild}/{channelId}/{messageId}");
+        var guild = Str(doc.RootElement, "guild_id") ?? await GuildAsync(after.Token).ConfigureAwait(false);
+        if (guild is not null && channelId is not null && ulong.TryParse(guild, out _) && ulong.TryParse(channelId, out _) && ulong.TryParse(messageId, out _))
+            url = new Uri($"https://discord.com/channels/{guild}/{channelId}/{messageId}");
         else notes.Add("Discord didn't say which server the channel is in, so the post has no address.");
         return SocialPostResult.Success(messageId, url, notes);
     }
+
 
     private void Authorize(HttpRequestMessage request)
     {
@@ -176,7 +215,7 @@ internal sealed class DiscordChannel : ChannelBase
             using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             notes.Add($"The message is up but wasn't published to following servers ({Failure(response, doc).Message}).");
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
         {
             notes.Add("The message is up but wasn't published to following servers (Discord didn't answer).");
         }
@@ -197,7 +236,7 @@ internal sealed class DiscordChannel : ChannelBase
             using var doc = await ReadJsonAsync(response, ct).ConfigureAwait(false);
             return _guildId = doc is null ? null : Str(doc.RootElement, "guild_id");
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
         {
             return null;
         }
@@ -211,7 +250,7 @@ internal sealed class DiscordChannel : ChannelBase
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             return failure with { Kind = SocialFailureKind.Auth };
         if (failure.Kind == SocialFailureKind.RateLimited && failure.RetryAfter is null && doc is not null
-            && doc.RootElement.TryGetProperty("retry_after", out var ra) && ra.TryGetDouble(out var seconds))
+            && Number(doc.RootElement, "retry_after") is { } seconds and >= 0 and < 86_400)
             return failure with { RetryAfter = TimeSpan.FromSeconds(seconds) };
         return failure;
     }

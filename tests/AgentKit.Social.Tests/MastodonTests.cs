@@ -23,22 +23,73 @@ public sealed class MastodonTests : IDisposable
 
     public void Dispose() => _host.Dispose();
 
-    private ISocialChannel Channel(bool attach = false) =>
-        _host.Channels.Mastodon(new MastodonAccount(new Uri("https://mastodon.example/"), Token) { AttachCardImage = attach });
+    private ISocialChannel Channel() =>
+        _host.Channels.Mastodon(new MastodonAccount(new Uri("https://mastodon.example/"), Token) { MediaPollInterval = TimeSpan.FromMilliseconds(1) });
 
     /// <summary>An instance that honours the Idempotency-Key the way Mastodon does: the same key returns the same status.</summary>
     private HttpResponseMessage Mastodon(SeenRequest r)
     {
         if (r.Header("Authorization") != "Bearer " + Token)
             return FakeNetwork.Json(HttpStatusCode.Unauthorized, new { error = "The access token is invalid" });
-        if (r.Uri.AbsolutePath == "/api/v2/media")
-            return FakeNetwork.Json(HttpStatusCode.OK, new { id = "media-1", type = "image" });
-        if (r.Uri.AbsolutePath != "/api/v1/statuses")
+        var path = r.Uri.AbsolutePath;
+        if (path == "/api/v2/media" && r.Method == HttpMethod.Post)
+        {
+            // Each upload takes the next plan: "ok" (200, processed at once), "slow" (202, then 206 once, then 200),
+            // "broken" (202, then 422 on the check), "refused" (422 at upload).
+            var plan = MediaPlan.Count > 0 ? MediaPlan.Dequeue() : "ok";
+            if (plan == "refused") return FakeNetwork.Json(HttpStatusCode.UnprocessableEntity, new { error = "Validation failed: File content type is invalid" });
+            var mediaId = "media-" + (++_media).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _mediaState[mediaId] = plan;
+            return FakeNetwork.Json(plan == "ok" ? HttpStatusCode.OK : HttpStatusCode.Accepted, new { id = mediaId, type = "image" });
+        }
+        if (path.StartsWith("/api/v1/media/", StringComparison.Ordinal))
+        {
+            var mediaId = path["/api/v1/media/".Length..];
+            if (r.Method == HttpMethod.Delete)
+            {
+                Deleted.Add(mediaId);
+                return FakeNetwork.Json(HttpStatusCode.OK, new { id = mediaId });
+            }
+            switch (_mediaState.GetValueOrDefault(mediaId))
+            {
+                case "slow":
+                    _mediaState[mediaId] = "ok";
+                    return FakeNetwork.Json(HttpStatusCode.PartialContent, new { id = mediaId, url = (string?)null });
+                case "broken":
+                    return FakeNetwork.Json(HttpStatusCode.UnprocessableEntity, new { error = "Processing failed" });
+                default:
+                    return FakeNetwork.Json(HttpStatusCode.OK, new { id = mediaId, url = $"https://files.example/{mediaId}.png" });
+            }
+        }
+        if (path != "/api/v1/statuses")
             return FakeNetwork.Json(HttpStatusCode.NotFound, new { error = "Record not found" });
+        var media = r.Form().Where(f => f.Key == "media_ids[]").Select(f => f.Value).ToList();
+        if (media.Any(m => _mediaState.GetValueOrDefault(m) != "ok"))
+            return FakeNetwork.Json(HttpStatusCode.UnprocessableEntity, new { error = "Cannot attach files that have not finished processing" });
         var key = r.Header("Idempotency-Key")!;
-        if (!_byKey.TryGetValue(key, out var id)) _byKey[key] = id = (++_statuses).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return FakeNetwork.Json(HttpStatusCode.OK, new { id, url = $"https://mastodon.example/@writer/{id}", uri = $"https://mastodon.example/users/writer/statuses/{id}" });
+        if (!_byKey.TryGetValue(key, out var id))
+        {
+            _byKey[key] = id = (++_statuses).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _statusMedia[id] = media;
+        }
+        return FakeNetwork.Json(HttpStatusCode.OK, new
+        {
+            id,
+            url = $"https://mastodon.example/@writer/{id}",
+            uri = $"https://mastodon.example/users/writer/statuses/{id}",
+            media_attachments = _statusMedia[id].Select(m => new { id = m }).ToArray(),
+        });
     }
+
+    private readonly Dictionary<string, string> _mediaState = [];
+    private readonly Dictionary<string, List<string>> _statusMedia = [];
+    private int _media;
+
+    private Queue<string> MediaPlan { get; } = new();
+
+    private List<string> Deleted { get; } = [];
+
+    private static SocialImage Picture(int n) => new() { Bytes = Pictures.Png(100 + n), ContentType = "image/png", Alt = $"Picture {n} of the map" };
 
     private static SocialPost Post(string key = "post-1") => new()
     {
@@ -120,18 +171,99 @@ public sealed class MastodonTests : IDisposable
     }
 
     [Fact]
-    public async Task A_card_picture_is_attached_only_when_asked_with_its_alt_text()
+    public async Task Pictures_upload_as_media_wait_for_processing_and_attach_in_order()
     {
-        await Channel().PostAsync(Post("a"));
-        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/api/v2/media");
+        MediaPlan.Enqueue("ok");
+        MediaPlan.Enqueue("slow");
+        var result = await Channel().PostAsync(Post() with { Images = [Picture(1), Picture(2)] });
 
-        var result = await Channel(attach: true).PostAsync(Post("b"));
-        Assert.True(result.Posted);
-        var media = _host.Network.Seen.Single(s => s.Uri.AbsolutePath == "/api/v2/media");
-        Assert.Equal("multipart/form-data", media.ContentType);
-        Assert.Contains("name=file; filename=card.png", media.Text, StringComparison.Ordinal);
-        Assert.Contains("A map of the world", media.Text, StringComparison.Ordinal);
-        Assert.Contains(new KeyValuePair<string, string>("media_ids[]", "media-1"), _host.Network.Seen[^1].Form());
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal(
+            ["POST /api/v2/media", "POST /api/v2/media", "GET /api/v1/media/media-2", "GET /api/v1/media/media-2", "POST /api/v1/statuses"],
+            _host.Network.Seen.Select(s => $"{s.Method} {s.Uri.AbsolutePath}"));
+        var upload = _host.Network.Seen[0];
+        Assert.Equal("multipart/form-data", upload.ContentType);
+        Assert.Contains("name=file; filename=picture.png", upload.Text, StringComparison.Ordinal);
+        Assert.Contains("name=description", upload.Text, StringComparison.Ordinal);
+        Assert.Contains("Picture 1 of the map", upload.Text, StringComparison.Ordinal);
+        var form = _host.Network.Seen[^1].Form();
+        Assert.Equal(["media-1", "media-2"], form.Where(f => f.Key == "media_ids[]").Select(f => f.Value));
+        Assert.Contains("https://blog.example.com/posts/lorebook", form.Single(f => f.Key == "status").Value, StringComparison.Ordinal);
+        Assert.Empty(Deleted);
+    }
+
+    [Fact]
+    public async Task A_picture_refused_halfway_posts_nothing_and_deletes_the_ones_already_uploaded()
+    {
+        MediaPlan.Enqueue("ok");
+        MediaPlan.Enqueue("ok");
+        MediaPlan.Enqueue("refused");
+        var result = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1), Picture(2), Picture(3)] });
+
+        Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
+        Assert.StartsWith("Picture 3 of 3 didn't upload", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Nothing was posted; the 2 already uploaded were deleted.", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Equal(["media-1", "media-2"], Deleted);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/api/v1/statuses");
+        Assert.Equal(SocialAttemptState.Failed, _host.Ledger.Find("post-1")!.State);
+    }
+
+    [Fact]
+    public async Task A_picture_whose_processing_fails_posts_nothing_and_cleans_up_including_itself()
+    {
+        MediaPlan.Enqueue("ok");
+        MediaPlan.Enqueue("broken");
+        var result = await Channel().PostAsync(Post() with { Images = [Picture(1), Picture(2)] });
+        Assert.Equal(SocialFailureKind.Rejected, result.Failure!.Kind);
+        Assert.Contains("couldn't process it", result.Failure.Message, StringComparison.Ordinal);
+        Assert.Equal(["media-1", "media-2"], Deleted);
+        Assert.DoesNotContain(_host.Network.Seen, s => s.Uri.AbsolutePath == "/api/v1/statuses");
+    }
+
+    [Fact]
+    public async Task A_resend_under_the_same_key_keeps_the_first_statuses_pictures_and_deletes_its_own()
+    {
+        // The first status lands but its answer is lost.
+        var inner = _host.Network.Respond;
+        var lost = false;
+        _host.Network.Respond = r =>
+        {
+            var answer = inner(r);
+            if (r.Uri.AbsolutePath == "/api/v1/statuses" && !lost)
+            {
+                lost = true;
+                answer.Dispose();
+                throw new TaskCanceledException("lost");
+            }
+            return answer;
+        };
+        await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+        var second = await _host.Publisher.PostAsync(Channel(), Post() with { Images = [Picture(1)] });
+
+        Assert.True(second.Posted);
+        Assert.Equal(1, _statuses);
+        Assert.Equal(["media-2"], Deleted);   // the resend's upload; media-1 is the status's
+    }
+
+    [Fact]
+    public void Picture_limits_are_the_instances_and_refused_in_compose()
+    {
+        var channel = Channel();
+        Assert.True(channel.Compose(Post() with { Images = [Picture(1), Picture(2), Picture(3), Picture(4)] }).Fits);
+        var five = channel.Compose(Post() with { Images = [Picture(1), Picture(2), Picture(3), Picture(4), Picture(5)] });
+        Assert.Contains("at most 4 pictures", Assert.Single(five.Problems), StringComparison.Ordinal);
+
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        Assert.True(channel.Compose(Post() with { Images = [gif] }).Fits);
+        Assert.Contains("goes alone", Assert.Single(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Problems), StringComparison.Ordinal);
+
+        var noAlt = channel.Compose(Post() with { Images = [Picture(1) with { Alt = " " }] });
+        Assert.Contains("no alt text", Assert.Single(noAlt.Problems), StringComparison.Ordinal);
+
+        var small = _host.Channels.Mastodon(new MastodonAccount(new Uri("https://mastodon.example"), Token) { ImageSizeLimit = 100, MaxMediaAttachments = 2 });
+        Assert.Contains("bytes", Assert.Single(small.Compose(Post() with { Images = [Picture(1)] }).Problems), StringComparison.Ordinal);
+        Assert.True(channel.Compose(new SocialPost { Text = "", Images = [Picture(1)], IdempotencyKey = "k" }).Fits);
     }
 
     [Fact]

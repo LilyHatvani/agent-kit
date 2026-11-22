@@ -7,10 +7,17 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 ### Unreleased
 
 - **First release.** One `ISocialChannel` contract and adapters for Bluesky (AT Protocol, app password, link and tag
-  facets in UTF-8 bytes, an external card with its thumb uploaded as a blob), Mastodon (instance token,
-  `Idempotency-Key`, the instance's own limits), Discord (incoming webhook or bot, an embed, no mentions parsed, bot
-  nonce and crosspost) and X (API v2, OAuth 2 user token, twitter-text v3 weighted counting, token refresh; needs
-  a paid X API plan and a user-context OAuth 2 token).
+  facets in UTF-8 bytes, an images embed or an external card), Mastodon (instance token, `Idempotency-Key`, the
+  instance's own limits, media processing polled), Discord (incoming webhook or bot, attachments or an embed with
+  colour, footer and time, no mentions parsed, bot nonce and crosspost) and X (API v2 in user context, OAuth 1.0a
+  signed or an OAuth 2.0 token with refresh, media upload with alt text, a weighted count never under X's own; needs a
+  paid X API plan). The Bluesky, X and Discord adapters carry over Echo of Dreams' announcement cross-posters; the
+  README says what changed and why.
+- **Pictures** (`SocialPost.Images`, alt text required) post as each network's own media; per-network count, size,
+  format and animated-GIF limits are refused in `Compose`, never dropped. A picture that fails halfway posts nothing
+  and the failure says what became of the ones already uploaded (Mastodon's are deleted).
+- `ISocialPostLedger.SaveAsync` is conditional (same attempt, still pending), so a late refusal from one caller never
+  overwrites a post another caller landed.
 - `SocialPublisher.PostEachAsync(postKey, deliveries)` posts one item to a set of channels at once and answers per
   channel; each key is `KeyFor(postKey, channelKey)`, so a rerun of the set skips what is up.
 - `Compose` gives the text as sent, its length as the network counts it and what stops it; a post that doesn't fit is

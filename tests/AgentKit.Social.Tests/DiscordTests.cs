@@ -208,4 +208,68 @@ public sealed class DiscordTests : IDisposable
         Assert.Equal("1", new DiscordWebhook(new Uri("https://discord.com/api/v10/webhooks/1/abcdefghijklmnop")).WebhookId);
         Assert.Equal("1", new DiscordWebhook(new Uri("https://canary.discord.com/api/webhooks/1/abcdefghijklmnop")).WebhookId);
     }
+
+    private static SocialImage Picture(int n) => new() { Bytes = Pictures.Png(100 + n), ContentType = "image/png", Alt = $"Map {n}" };
+
+    [Fact]
+    public async Task Pictures_go_as_the_messages_own_attachments_in_one_request_with_no_embed()
+    {
+        var result = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post() with { Images = [Picture(1), Picture(2)] });
+
+        Assert.True(result.Posted, result.Failure?.Message);
+        var r = _host.Network.Seen[0];
+        Assert.Equal("multipart/form-data", r.ContentType);
+        Assert.Contains("name=\"files[0]\"; filename=picture-1.png", r.Text, StringComparison.Ordinal);
+        Assert.Contains("name=\"files[1]\"; filename=picture-2.png", r.Text, StringComparison.Ordinal);
+        Assert.Contains("\"attachments\":[{\"id\":0,\"filename\":\"picture-1.png\",\"description\":\"Map 1\"},{\"id\":1,\"filename\":\"picture-2.png\",\"description\":\"Map 2\"}]",
+            r.Text, StringComparison.Ordinal);
+        Assert.Contains("\"flags\":4", r.Text, StringComparison.Ordinal);           // SUPPRESS_EMBEDS: no link card under the pictures
+        Assert.DoesNotContain("\"embeds\"", r.Text, StringComparison.Ordinal);
+        Assert.Contains("https://blog.example.com/posts/lorebook", r.Text, StringComparison.Ordinal);   // the link is in the text
+        Assert.Empty(_host.Media.Seen);
+    }
+
+    [Fact]
+    public void Picture_limits_are_discords_and_refused_in_compose()
+    {
+        var channel = _host.Channels.Discord(new DiscordWebhook(WebhookUrl));
+        var gif = new SocialImage { Bytes = Pictures.AnimatedGif(), ContentType = "image/gif", Alt = "A spinning map" };
+        Assert.True(channel.Compose(Post() with { Images = [gif, Picture(1)] }).Fits);   // Discord plays GIFs among other pictures
+        Assert.Contains("at most 10", Assert.Single(channel.Compose(Post() with { Images = [.. Enumerable.Range(1, 11).Select(Picture)] }).Problems), StringComparison.Ordinal);
+        Assert.Contains("1024", Assert.Single(channel.Compose(Post() with { Images = [Picture(1) with { Alt = new string('a', 1025) }] }).Problems), StringComparison.Ordinal);
+        var big = Picture(1) with { Bytes = Pictures.Png(20 * 1024 * 1024 + 1) };
+        Assert.Contains("bytes", Assert.Single(channel.Compose(Post() with { Images = [big] }).Problems), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_card_carries_its_accent_footer_and_time_into_the_embed()
+    {
+        var post = Post() with
+        {
+            Card = new LinkCard { Title = "📢 New feature", Accent = 0x5865F2, Footer = "Echo • New Feature", PublishedAt = TestHost.Start },
+        };
+        await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(post);
+        var embed = _host.Network.Seen[0].Json.GetProperty("embeds")[0];
+        Assert.Equal(0x5865F2, embed.GetProperty("color").GetInt32());
+        Assert.Equal("Echo • New Feature", embed.GetProperty("footer").GetProperty("text").GetString());
+        Assert.Equal("2026-11-22T12:00:00.0000000Z", embed.GetProperty("timestamp").GetString());
+    }
+
+    [Fact]
+    public async Task A_cancel_after_the_message_is_up_still_records_it_as_posted()
+    {
+        using var cts = new CancellationTokenSource();
+        _host.Network.Respond = r =>
+        {
+            var answer = Discord(r);
+            if (r.Method == HttpMethod.Post) cts.Cancel();   // the caller gives up right after Discord took the message
+            return answer;
+        };
+        var hook = new DiscordWebhook(WebhookUrl);
+        var result = await _host.Publisher.PostAsync(_host.Channels.Discord(hook), Post(), cancellationToken: cts.Token);
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal(SocialAttemptState.Posted, _host.Ledger.Find("post-1")!.State);
+        var again = await _host.Publisher.PostAsync(_host.Channels.Discord(hook), Post());
+        Assert.True(again.AlreadyPosted);
+    }
 }

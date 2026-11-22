@@ -15,7 +15,7 @@ small interfaces the host implements.
 | NuGet [`AgentKit.Secrets`](src/AgentKit.Secrets/README.md) | Secrets at rest: a keyring of master keys from configuration (current seals, previous only open), key ids that open nothing, AES-256-GCM with associated data naming the row | **built** |
 | NuGet [`AgentKit.Push`](src/AgentKit.Push/README.md) | Web Push on the BCL: RFC 8291 encryption, the RFC 8292 VAPID header, key and subscription checks, and the receiving side for tests | **built** |
 | NuGet [`AgentKit.Fetch`](src/AgentKit.Fetch/README.md) | Outgoing HTTP to addresses someone else chose: one table of public addresses, checked at connect time so redirects and DNS rebinding meet it | **built** |
-| NuGet [`AgentKit.Social`](src/AgentKit.Social/README.md) | Post a link to Bluesky, Mastodon, Discord and X behind one contract: per-network composing limits, a link card, a result with the post's URL or a reason, and an idempotency ledger the host backs so a retry never posts twice where the network can be asked | **built** |
+| NuGet [`AgentKit.Social`](src/AgentKit.Social/README.md) | Post to Bluesky, Mastodon, Discord and X behind one contract: per-network composing limits, pictures as native media (a link card without them), a result with the post's URL or a reason, and an idempotency ledger the host backs so a retry never posts twice where the network can be asked | **built** |
 | NuGet `AgentKit.Postgres` | Append-only guard, worker-cursor leases, a run-once migrator | planned |
 | NuGet `AgentKit.Storage` | S3 SigV4 query presigner that signs Content-Length | planned |
 | npm `@agentkit/tooling` | Railway CLI wrapper, a ship-gate core, bundle budgets, a theme contrast check | planned |

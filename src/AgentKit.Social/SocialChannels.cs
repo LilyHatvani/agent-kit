@@ -32,8 +32,11 @@ public sealed class SocialChannels
 {
     private readonly SocialChannelContext _context;
 
-    /// <summary>Channels over <paramref name="http"/> (the clients <see cref="SocialServiceCollectionExtensions.AddSocialChannels"/> registers).</summary>
-    public SocialChannels(IHttpClientFactory http, TimeProvider? clock = null, ILoggerFactory? logs = null)
+    /// <summary>
+    /// Channels over the clients <see cref="SocialServiceCollectionExtensions.AddSocialChannels"/> registers. Internal: a
+    /// factory built elsewhere would carry the default HttpClient request logs, which write a webhook's token.
+    /// </summary>
+    internal SocialChannels(IHttpClientFactory http, TimeProvider? clock = null, ILoggerFactory? logs = null)
     {
         ArgumentNullException.ThrowIfNull(http);
         _context = new SocialChannelContext(http, clock ?? TimeProvider.System, logs ?? NullLoggerFactory.Instance, new BlueskySessions());
@@ -115,7 +118,7 @@ internal sealed class BlueskySessions
     public void Drop(string key, BlueskySession session) => _sessions.TryRemove(new KeyValuePair<string, BlueskySession>(key, session));
 }
 
-internal sealed record BlueskySession(string AccessJwt, string Did, string Handle)
+internal sealed record BlueskySession(string AccessJwt, string? RefreshJwt, string Did, string Handle)
 {
     public override string ToString() => $"Bluesky session for {Did} (tokens hidden)";
 }
