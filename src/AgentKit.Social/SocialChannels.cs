@@ -86,6 +86,20 @@ public sealed class SocialChannels
         return new DiscordChannel(_context, bot);
     }
 
+    /// <summary>A Slack incoming webhook, posting one message whose link Slack previews itself. No pictures: a webhook can't carry them.</summary>
+    public ISocialChannel Slack(SlackWebhook webhook)
+    {
+        ArgumentNullException.ThrowIfNull(webhook);
+        return new SlackChannel(_context, webhook);
+    }
+
+    /// <summary>A Telegram bot posting in one channel, group or chat: a message with a link preview, or pictures with a caption.</summary>
+    public ISocialChannel Telegram(TelegramChat chat)
+    {
+        ArgumentNullException.ThrowIfNull(chat);
+        return new TelegramChannel(_context, chat);
+    }
+
     /// <summary>
     /// An X account, posting through API v2. Needs a paid X API plan (pay-per-use credits) and an OAuth 2.0 user access
     /// token for the posting account; an app-only bearer token can't post.

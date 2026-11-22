@@ -6,6 +6,12 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 
 ### Unreleased
 
+- **Slack and Telegram.** `SocialChannels.Slack(SlackWebhook)`: one escaped message whose link Slack previews itself;
+  pictures refused (a webhook can't attach them); no message id comes back, so the result has none and says so.
+  `SocialChannels.Telegram(TelegramChat)`: a bot posting in a channel, group or chat, by `@username` or chat id; plain
+  text with a link preview, or pictures as a photo, an album or an animation with the text as the caption, Bot API
+  limits checked in `Compose`; the post's `t.me` address. Neither network can be asked about a lost answer
+  (`Unconfirmed`). Both carry their credential in the request URL, kept out of ids, messages and logs.
 - **First release.** One `ISocialChannel` contract and adapters for Bluesky (AT Protocol, app password, link and tag
   facets in UTF-8 bytes, an images embed or an external card), Mastodon (instance token, `Idempotency-Key`, the
   instance's own limits, media processing polled), Discord (incoming webhook or bot, attachments or an embed with
