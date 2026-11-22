@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.Social</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.Social</PackageId>
+    <Description>Post a link to social networks from a server: one channel contract (compose within each network's limits, a link card, tags, an idempotency key) and adapters for Bluesky (AT Protocol, app password, link facets and an external card with its thumbnail), Mastodon (instance token, Idempotency-Key), Discord (incoming webhook or bot channel, embed) and X (API v2, OAuth 2 user token). A post either lands with the network's URL and id or fails with a reason category; expected failures never throw. A retry after a lost answer re-reads before re-sending where the network allows. Credentials come from the host; the package stores nothing.</Description>
+    <PackageTags>social;bluesky;atproto;mastodon;discord;webhook;x;twitter;idempotency</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentKit.Fetch\AgentKit.Fetch.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

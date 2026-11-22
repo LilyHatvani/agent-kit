@@ -2,6 +2,25 @@
 
 Per package, newest first. Versions are `0.1.<CI run number>`; an entry names the first version that carries it.
 
+## AgentKit.Social
+
+### Unreleased
+
+- **First release.** One `ISocialChannel` contract and adapters for Bluesky (AT Protocol, app password, link and tag
+  facets in UTF-8 bytes, an external card with its thumb uploaded as a blob), Mastodon (instance token,
+  `Idempotency-Key`, the instance's own limits), Discord (incoming webhook or bot, an embed, no mentions parsed, bot
+  nonce and crosspost) and X (API v2, OAuth 2 user token, twitter-text v3 weighted counting, token refresh; opt-in,
+  paid).
+- `Compose` gives the text as sent, its length as the network counts it and what stops it; a post that doesn't fit is
+  refused, never cut. Results are posted (the network's id and URL, plus notes on anything left out) or failed with a
+  category (`Auth`, `RateLimited` with `RetryAfter`, `Rejected` with the network's message, `Transient` with
+  `MayHavePosted`, `Unconfirmed`); expected failures never throw.
+- `SocialPublisher` with a host-backed `ISocialPostLedger`: a posted key answers with the earlier post; a lost answer
+  resumes the attempt (Bluesky reads its pre-chosen record key back, Mastodon and a Discord bot resend inside the
+  network's duplicate window, the others answer `Unconfirmed` until a person resends).
+- Credentials come from the host and print hidden; messages and logs are scrubbed of them. Both HttpClients go through
+  AgentKit.Fetch's public-address guard and log no requests.
+
 ## AgentKit.Secrets
 
 ### Unreleased
