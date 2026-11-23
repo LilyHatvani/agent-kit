@@ -17,6 +17,7 @@ small interfaces the host implements.
 | NuGet [`AgentKit.Fetch`](src/AgentKit.Fetch/README.md) | Outgoing HTTP to addresses someone else chose: one table of public addresses, checked at connect time so redirects and DNS rebinding meet it | **built** |
 | NuGet [`AgentKit.Social`](src/AgentKit.Social/README.md) | Post to Bluesky, Mastodon, Discord and X behind one contract: per-network composing limits, pictures as native media (a link card without them), a result with the post's URL or a reason, and an idempotency ledger the host backs so a retry never posts twice where the network can be asked | **built** |
 | NuGet [`AgentKit.Channels`](src/AgentKit.Channels/README.md) | Messages to Discord and Slack webhooks, ntfy and signed outgoing webhooks: agent text escaped per destination, one reading of the answer, one retry schedule | **built** |
+| NuGet [`AgentKit.Export`](src/AgentKit.Export/README.md) | "Export everything" for a Postgres service: an allowlist per table checked against the live schema (nothing added later leaks or goes missing by default), one JSON document streamed from one snapshot, and reading it back through Postgres's own JSON conversion | **built** |
 | NuGet `AgentKit.Postgres` | Append-only guard, worker-cursor leases, a run-once migrator | planned |
 | NuGet `AgentKit.Storage` | S3 SigV4 query presigner that signs Content-Length | planned |
 | npm `@agentkit/tooling` | Railway CLI wrapper, a ship-gate core, bundle budgets, a theme contrast check | planned |

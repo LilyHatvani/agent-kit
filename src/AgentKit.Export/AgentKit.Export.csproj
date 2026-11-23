@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AgentKit.Export</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>AgentKit.Export</PackageId>
+    <Description>"Export everything" for a Postgres-backed service: an allowlist per table (every column exported or withheld with a reason, every table exported or left out with one), a check of that plan against the live schema so nothing added later leaks or goes missing by default, one JSON document streamed from a single read-only snapshot, and reading it back to insert rows through Postgres's own JSON conversion.</Description>
+    <PackageTags>export;import;backup;postgres;data-portability</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentKit.Export.Tests" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

@@ -2,6 +2,17 @@
 
 Per package, newest first. Versions are `0.1.<CI run number>`; an entry names the first version that carries it.
 
+## AgentKit.Export
+
+### Unreleased
+
+- **First release.** `ExportTable` / `ExportPlan`: an allowlist per table (columns exported or withheld with a reason,
+  tables exported or left out with one, rows chosen by an SQL condition on `@scope`). `UndecidedAsync` checks the plan
+  against the live schema. `WriteAsync` streams `{ format, …header, counts, tables }` from one read-only REPEATABLE READ
+  snapshot. `ExportDocument.ReadAsync` refuses another format, an oversized file and rows that don't match the counts;
+  `ExportTable.InsertSql()` writes a row back through `jsonb_populate_record`. Generalised from Relay's `Export.cs`;
+  first used by Agent Blog's export and import.
+
 ## AgentKit.Social
 
 ### Unreleased
