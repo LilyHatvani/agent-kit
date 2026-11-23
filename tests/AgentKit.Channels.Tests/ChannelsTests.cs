@@ -132,6 +132,44 @@ public sealed class ChannelsTests
     }
 
     [Theory]
+    [InlineData("99999999999999")] // past the year 9999: DateTimeOffset can't hold it
+    [InlineData("9223372036854775807")]
+    [InlineData("0")]
+    [InlineData("-1800000000")]
+    [InlineData("+1800000000")]
+    [InlineData(" 1800000000")]
+    [InlineData("1800000000.0")]
+    public void A_timestamp_out_of_range_or_malformed_is_refused_never_thrown(string timestamp)
+    {
+        var secret = StandardWebhooks.NewSecret();
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+        Assert.False(StandardWebhooks.IsFresh(timestamp, now));
+        Assert.False(StandardWebhooks.Verify(secret, "dlv_1", timestamp, "v1,x", "{}"u8, now));
+    }
+
+    [Fact]
+    public void A_timestamp_is_fresh_within_five_minutes_either_side()
+    {
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+        Assert.True(StandardWebhooks.IsFresh("1800000300", now));
+        Assert.True(StandardWebhooks.IsFresh("1799999700", now));
+        Assert.False(StandardWebhooks.IsFresh("1800000301", now));
+        Assert.False(StandardWebhooks.IsFresh("1799999699", now));
+        Assert.False(StandardWebhooks.IsFresh(null, now));
+    }
+
+    [Fact]
+    public void A_secret_is_checked_before_it_is_used()
+    {
+        Assert.Null(StandardWebhooks.SecretRefusal(StandardWebhooks.NewSecret()));
+        Assert.Null(StandardWebhooks.SecretRefusal("whsec_plJ3nmyCDGBKInavdOK15jsl"));
+        Assert.NotNull(StandardWebhooks.SecretRefusal(null));
+        Assert.NotNull(StandardWebhooks.SecretRefusal(""));
+        Assert.NotNull(StandardWebhooks.SecretRefusal("whsec_"));
+        Assert.NotNull(StandardWebhooks.SecretRefusal("whsec_not base64!"));
+    }
+
+    [Theory]
     [InlineData(200, SendResult.Sent)]
     [InlineData(204, SendResult.Sent)]
     [InlineData(429, SendResult.Retry)]

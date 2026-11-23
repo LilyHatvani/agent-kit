@@ -55,8 +55,11 @@ the same set again skips the channels that are up and resumes or retries the res
   stays in the text.
 - **The result.** Expected failures never throw: a credential refused (`Auth`), a wait (`RateLimited` with
   `RetryAfter`, at most a day), the network refused this post (`Rejected`, its message trimmed to 300 characters), the
-  network couldn't be reached or answered in a shape nobody expected (`Transient`, with `MayHavePosted` when the
-  request may have been acted on), or an earlier try that can't be checked (`Unconfirmed`). Only the caller's own
+  network couldn't be reached, asked for the request again (408, 425) or answered in a shape nobody expected
+  (`Transient`, with `MayHavePosted` when the request may have been acted on), or an earlier try that can't be checked
+  (`Unconfirmed`). A status is read with AgentKit.Channels' `SendOutcome.Classify`, the reading its notifications use,
+  then given its meaning for a post; `Retry-After` with `SendOutcome.RetryAfterOf` under the one-day bound, then each
+  network's reset headers. Only the caller's own
   cancellation throws, and only before the post is up: an answer that arrived is kept. Messages are safe to show and
   log: credentials are scrubbed even when a network echoes them back.
 - **A post that is up but lost something** says so in `Notes` (a card picture over the network's size, a crosspost that
@@ -139,9 +142,16 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
 **Discord** (an incoming webhook, or a bot in one channel).
 - One message: the text (2000 characters), the pictures or else an embed with the card (title cut to 256, description
   to 4096, the link as the embed's URL), and `allowed_mentions: { parse: [] }`, so no text ever pings `@everyone`.
-  Hashtags are left out. Without a card or pictures the link goes in the text and Discord unfurls it.
+  Hashtags are left out. Without a card or pictures the link goes in the text and Discord unfurls it. The text goes as
+  written, markdown and all: it is the post's own words, the same on every network (AgentKit.Channels escapes an
+  agent's notification text; a post is not that).
 - Webhook: `POST /webhooks/<id>/<token>?wait=true`. The URL is the credential; only `discord.com` webhook URLs are
-  taken, and every request goes to `https://discord.com/api/v10`.
+  taken, and every request goes to `https://discord.com/api/v10`. The URL is read by AgentKit.Channels'
+  `DiscordWebhookAddress`, the one reading both packages use, and a token under 10 characters is refused here too. A
+  `Username` is cut to Discord's 80. 401, 403, 404 and 410 (what Channels reads as gone) are `Auth`: the webhook no
+  longer posts.
+- The no-ping object, the limits and the cut (never between a letter and its accent, or inside an emoji) are Channels'
+  (`Discord.NoMentions()`, `Discord.Max*`, `Text.Truncate`).
 - Bot: `Authorization: Bot <token>`, a nonce, and `Crosspost` to publish in an announcement channel to the servers that
   follow it. The bot needs View Channel, Send Messages, Embed Links and Attach Files (and Manage Messages to crosspost
   others' posts).
@@ -176,14 +186,16 @@ upload, a connection that never opened) marks the attempt `Failed`, so the next 
 **Slack** (an incoming webhook).
 - One message: `text` with `unfurl_links`, so Slack previews the page (picture, title, description) from its own Open
   Graph tags; a card the host passes isn't sent. Hashtags are left out.
-- `&`, `<` and `>` become entities (Slack's escaping rule), so the words can't open a link, a mention or
-  `<!channel>`. The link goes in angle brackets, Slack's link form.
+- `&`, `<` and `>` become entities (Slack's escaping rule, AgentKit.Channels' `Slack.Escape`, the one its Slack
+  notifications use), so the words can't open a link, a mention or `<!channel>`. The link goes in angle brackets,
+  Slack's link form.
 - 4,000 characters: Slack's guidance for a readable message (it truncates past 40,000). Recalled, not read: Slack's
   docs weren't reachable when the adapter was written.
-- Only `https://hooks.slack.com/services/…` URLs are taken. The answer is `ok` and names no message, so `PostUrl` is
+- Only `https://hooks.slack.com/services/…` URLs are taken, checked by Channels' `Slack.WebhookRefusal` (no query or
+  fragment either). The answer is `ok` and names no message, so `PostUrl` is
   null with a note, and `PostId` is `slack:<attempt token>`. `Id` is `slack-webhook:<hash>`: the URL is the credential.
-- 404 and 410 (`no_service`, `channel_not_found`, `channel_is_archived`) and 403 are `Auth`: the webhook needs
-  replacing. A 200 without `ok` may have posted.
+- 404 and 410 (`no_service`, `channel_not_found`, `channel_is_archived`), 401 and 403 are `Auth` (what Channels reads
+  as gone): the webhook needs replacing. A 200 without `ok` may have posted.
 
 **Telegram** (a bot from @BotFather and the chat it posts in: `@channelname` or a numeric chat id; in a channel the bot
 is an administrator allowed to post).

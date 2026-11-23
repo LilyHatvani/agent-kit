@@ -13,10 +13,60 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
   `ExportTable.InsertSql()` writes a row back through `jsonb_populate_record`. Generalised from Relay's `Export.cs`;
   first used by Agent Blog's export and import.
 
+## AgentKit.Mail
+
+### Unreleased
+
+- **First release**, for Agent Blog's email notifications and agent-support, shaped from what Echo of Dreams sends
+  today. Built on AgentKit.Channels (the reading of a status and of `Retry-After`, the cut, the Standard Webhooks
+  verifier) and AgentKit.Fetch (the guarded client). No Resend SDK.
+  - `Email` (from, to, subject, text, HTML, reply-to, headers, idempotency key) and `IEmailSender`;
+    `ResendEmailSender` posts it to `POST https://api.resend.com/emails` once, as the same bytes every time, with the
+    `Idempotency-Key` and the `User-Agent` Resend requires. `AddResendEmail(apiKey)` registers it and its client
+    (public addresses on 443, no redirect, no request logging, a 64 KiB answer cap, none of the host's
+    `ConfigureHttpClientDefaults` handlers, so a resilience handler can't resend), unless the host registered its own
+    sender first.
+  - `EmailResult`: sent with Resend's id, or failed as `Auth`, `RateLimited` (with the wait), `Rejected` (Resend's
+    message, trimmed) or `Transient` (with `MayHaveSent`). Expected failures never throw; the API key never reaches a
+    message or a log, and logs carry no address.
+  - `OneClickUnsubscribe.Headers(url)`: the RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` pair.
+  - `ResendWebhooks.Verify` (Svix headers: `Valid`, `Malformed`, `Stale`, `Mismatch`) and `Parse` into
+    `ResendWebhookEvent` (type, email id, recipients, bounce, suppression origin, `IsHardBounce`, the `data` object).
+  - No usage caps: only what Resend refuses, plus what can't be put on the wire unchanged.
+
 ## AgentKit.Social
 
 ### Unreleased
 
+- **Fixed:** a handler from the host's `ConfigureHttpClientDefaults` ran on the API client, so a standard resilience
+  handler retried a 5xx up to three times: a second post on a network with no idempotency key. The API client clears
+  those handlers now; retries are the ledger's. A handler the host adds to `SocialDefaults.ApiHttpClientName` by name
+  still runs.
+- **Built on AgentKit.Channels** (a package dependency now). Channels and Social both send Discord and Slack webhooks,
+  and what they share now lives once, in Channels:
+  - Discord: the webhook URL is read by `DiscordWebhookAddress` (the API base too), and the payload takes
+    `Discord.NoMentions()` and the `Discord.Max*` limits.
+  - Slack: the URL is checked by `Slack.WebhookRefusal`, and the text is escaped with `Slack.Escape`.
+  - Every cut (card fields, the webhook `Username`, now to Discord's 80, and a failure's message) is `Text.Truncate`.
+  - Every network's refusal is read with `SendOutcome.Classify`, `RetryAfterOf` and `Bounded`, Discord's and
+    Telegram's body `retry_after` included.
+  - `TextRules.Cut` and the internal `DiscordWebhookUrl` are gone.
+  - Changed on that reading, each to the stricter or the correct side:
+    - A 408 or 425 is `Transient` (the network didn't act on it), not `Rejected`.
+    - Discord's 410 is `Auth`, like its 404. Off Discord and Slack, a 404 or 410 is still `Rejected`.
+    - A Discord webhook id with a sign (`+1`) or past 64 bits, or an API segment other than `v<n>`, is refused.
+    - A `Retry-After` with a fraction is read, and it now goes before the reset headers (1.5 s where
+      `X-RateLimit-Reset-After: 30` gave 30 s), as a whole-seconds one always did. One with a sign or an exponent is
+      ignored, so the network's reset header or body still decides. The reset headers (`X-RateLimit-Reset-After` and
+      the epoch ones) are read just as strictly, so a malformed one leaves the wait to the body's `retry_after`
+      (Discord, Telegram).
+    - A body `retry_after` of a day or more waits a day; it was ignored before.
+  - Changed, and named here so nothing is a surprise:
+    - The Discord host is compared as its IDN form, so a full-width `ｄiscord.com` reads as `discord.com`. The request
+      still goes only to `https://discord.com/api/v10`.
+    - A cut drops the whitespace before its "…".
+    - A failure message's cut never splits an emoji.
+    - The refusal texts for a bad webhook URL are Channels' wording.
 - **Slack and Telegram.** `SocialChannels.Slack(SlackWebhook)`: one escaped message whose link Slack previews itself;
   pictures refused (a webhook can't attach them); no message id comes back, so the result has none and says so.
   `SocialChannels.Telegram(TelegramChat)`: a bot posting in a channel, group or chat, by `@username` or chat id; plain
@@ -53,6 +103,32 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 
 ### Unreleased
 
+- **The lower layer for AgentKit.Social's Discord and Slack channels.** Additive only: nothing public was removed or
+  re-shaped. New:
+  - `DiscordWebhookAddress`: `TryParse`, `Parse`, `Id`, `Token`, the canonical `Uri` and `ExecuteUri` on `Api`
+    (`https://discord.com/api/v10`). It prints without the token.
+  - `Discord.NoMentions()`, and the limits `Discord.MaxContent`, `MaxFooter`, `MaxAttachmentDescription` and
+    `MaxUsername`.
+  - `SendOutcome.Classify(status)`, `SendOutcome.RetryAfterOf(response, now, max)` and `SendOutcome.Bounded(wait, max)`.
+  - `Discord.Request` and `Slack.Request` still post to the URL they are given.
+- **Fixed:**
+  - `StandardWebhooks.Verify` threw `ArgumentOutOfRangeException` on a `webhook-timestamp` past the year 9999
+    (`99999999999999`): it built a `DateTimeOffset` from it. The timestamp is compared as seconds now, so such a
+    delivery is stale and refused. New, for receivers: `StandardWebhooks.IsFresh(timestamp, now)` (the same check on its
+    own) and `StandardWebhooks.SecretRefusal(secret)` (check a secret at startup instead of on the first delivery).
+  - A `Retry-After` of `NaN`, `Infinity` or `1e300` made `SendOutcome.ReadAsync` throw (it reached
+    `TimeSpan.FromSeconds`). Only whole seconds, seconds with a fraction or a date are read now; anything else is no
+    header, so a 429 waits the default minute. That covers a negative value too, which used to mean "send again now".
+  - `Text.Truncate(text, 1)` threw on text of two or more characters; it now gives "…".
+  - `Text.Truncate` cuts between grapheme clusters, so it never splits a flag, a ZWJ emoji or a letter from its accent
+    (it already kept surrogate pairs whole).
+- **Stricter, for URLs no service hands out:**
+  - `Discord.WebhookRefusal` refuses a webhook id with a sign or past 64 bits, and an API segment other than `v<n>`
+    (`/api/x10/webhooks/…`).
+  - `Slack.WebhookRefusal` refuses a query or a fragment, with a refusal that says so. A wrong host or path keeps the
+    old text.
+- README: a Discord or Slack webhook's path is its token. Send through a client with `.RemoveAllLoggers()`, and keep
+  HttpClient's trace spans for those hosts out of exports.
 - **First release**, for Agent Blog's notifications: Discord and Slack webhooks, ntfy and Standard Webhooks signed
   webhooks (sign pinned to the spec's reference vector, verify for receivers). Each builder escapes agent-written text
   for its destination; `SendOutcome` reads an answer as sent, retry (with `Retry-After`), gone or failed; `Retries` is

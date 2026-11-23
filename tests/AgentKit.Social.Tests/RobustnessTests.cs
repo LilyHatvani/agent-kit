@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AgentKit.Social.Tests;
 
@@ -20,18 +21,21 @@ public sealed class RobustnessTests : IDisposable
 
     private static SocialPost Post(string key = "k") => new() { Text = "Hello", Link = new Uri("https://blog.example.com/p"), IdempotencyKey = key };
 
-    public static TheoryData<string, string, string> RateLimitHeaders => new()
+    /// <summary>The header, its value, and the wait it gives exactly (a <see cref="TimeSpan"/> as text, or null for none).</summary>
+    public static TheoryData<string, string, string, string?> RateLimitHeaders => new()
     {
-        { "x", "x-rate-limit-reset", "1763830000000" },       // Unix milliseconds
-        { "x", "x-rate-limit-reset", "99999999999999999" },
-        { "x", "X-RateLimit-Reset-After", "NaN" },
-        { "x", "X-RateLimit-Reset-After", "1e300" },
-        { "bluesky", "ratelimit-reset", "99999999999999999" },
+        { "x", "x-rate-limit-reset", "1763830000000", "00:00:00" },        // Unix milliseconds, a year before the clock: now
+        { "x", "x-rate-limit-reset", "99999999999999999", "1.00:00:00" },  // far ahead: the one-day cap
+        { "x", "X-RateLimit-Reset-After", "NaN", null },
+        { "x", "X-RateLimit-Reset-After", "1e300", null },                 // an exponent isn't seconds
+        { "bluesky", "ratelimit-reset", "99999999999999999", "1.00:00:00" },
+        { "x", "Retry-After", "50000", "13:53:20" },                         // under the cap, as asked
+        { "x", "Retry-After", "100000", "1.00:00:00" },                      // over it: a day exactly
     };
 
     [Theory]
     [MemberData(nameof(RateLimitHeaders))]
-    public async Task A_rate_limit_header_with_nonsense_in_it_is_still_a_rate_limit(string network, string header, string value)
+    public async Task A_rate_limit_header_with_nonsense_in_it_is_still_a_rate_limit(string network, string header, string value, string? wait)
     {
         _host.Network.Respond = r => r.Uri.AbsolutePath.EndsWith("createSession", StringComparison.Ordinal)
             ? FakeNetwork.Json(HttpStatusCode.OK, new { accessJwt = "a-jwt", refreshJwt = "r-jwt", handle = "w.bsky.social", did = "did:plc:x" })
@@ -39,7 +43,35 @@ public sealed class RobustnessTests : IDisposable
         var channel = network == "x" ? X() : Bluesky();
         var result = await channel.PostAsync(Post());
         Assert.Equal(SocialFailureKind.RateLimited, result.Failure!.Kind);
-        Assert.True(result.Failure.RetryAfter is null || result.Failure.RetryAfter <= TimeSpan.FromDays(1));
+        Assert.Equal(wait is null ? null : TimeSpan.Parse(wait, System.Globalization.CultureInfo.InvariantCulture), result.Failure.RetryAfter);
+    }
+
+    /// <summary>A Retry-After that isn't seconds or a date is no header: the network's own reset header still decides.</summary>
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("1e3")]
+    [InlineData("-0.5")]
+    public async Task A_malformed_retry_after_never_overrides_the_reset_header(string value)
+    {
+        var reset = TestHost.Start.AddMinutes(10).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests, new { title = "Too Many Requests" },
+            ("Retry-After", value), ("x-rate-limit-reset", reset));
+        var result = await X().PostAsync(Post());
+        Assert.Equal(TimeSpan.FromMinutes(10), result.Failure!.RetryAfter);
+    }
+
+    /// <summary>A status read by AgentKit.Channels' one reading: 408 and 425 are worth sending again; a 404 off Discord is still a refusal.</summary>
+    [Theory]
+    [InlineData(408, SocialFailureKind.Transient)]
+    [InlineData(425, SocialFailureKind.Transient)]
+    [InlineData(404, SocialFailureKind.Rejected)]
+    [InlineData(410, SocialFailureKind.Rejected)]
+    public async Task A_status_off_discord_keeps_its_network_meaning(int status, SocialFailureKind kind)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json((HttpStatusCode)status, new { title = "No", detail = "No" });
+        var result = await X().PostAsync(Post());
+        Assert.Equal(kind, result.Failure!.Kind);
+        Assert.False(result.Failure.MayHavePosted);
     }
 
     [Fact]
@@ -161,5 +193,31 @@ public sealed class RobustnessTests : IDisposable
         var third = await _host.Publisher.PostAsync(channel, Post());
         Assert.True(third.AlreadyPosted);
         Assert.Equal(1, statuses);
+    }
+
+    /// <summary>Retries a server error, as a host's ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler()) would.</summary>
+    private sealed class RetryingHandler : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = null!;
+            for (var i = 0; i < 4; i++)
+            {
+                response = await base.SendAsync(request, cancellationToken);
+                if ((int)response.StatusCode < 500) break;
+            }
+            return response;
+        }
+    }
+
+    [Fact]
+    public async Task A_hosts_default_handlers_never_reach_the_api_client_so_a_server_error_is_one_post()
+    {
+        using var host = new TestHost(s => s.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler(() => new RetryingHandler())));
+        host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.ServiceUnavailable, "");
+        var channel = host.Channels.Discord(new DiscordWebhook(new Uri("https://discord.com/api/webhooks/1/abcdefghijklmnop")));
+        var result = await channel.PostAsync(Post());
+        Assert.Equal(SocialFailureKind.Transient, result.Failure!.Kind);
+        Assert.Single(host.Network.Seen);
     }
 }

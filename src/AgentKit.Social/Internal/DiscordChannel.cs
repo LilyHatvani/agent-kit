@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AgentKit.Channels;
 
 namespace AgentKit.Social.Internal;
 
@@ -24,12 +25,13 @@ namespace AgentKit.Social.Internal;
 /// </summary>
 internal sealed class DiscordChannel : ChannelBase
 {
-    private const string ApiBase = "https://discord.com/api/v10";
-    private const int MaxContent = 2000;
-    private const int MaxTitle = 256;
-    private const int MaxDescription = 4096;
+    /// <summary>Discord's versioned API, the one AgentKit.Channels' <see cref="DiscordWebhookAddress"/> points webhooks at.</summary>
+    private static readonly string ApiBase = DiscordWebhookAddress.Api.AbsoluteUri.TrimEnd('/');
+    private const int MaxContent = Discord.MaxContent;
+    private const int MaxTitle = Discord.MaxTitle;
+    private const int MaxDescription = Discord.MaxBody;
     private const int MaxFile = 20 * 1024 * 1024;
-    private const int MaxAlt = 1024;
+    private const int MaxAlt = Discord.MaxAttachmentDescription;
     private const int SuppressEmbeds = 1 << 2;
 
     /// <summary>
@@ -96,7 +98,7 @@ internal sealed class DiscordChannel : ChannelBase
         var payload = new JsonObject
         {
             ["content"] = composed.Text,
-            ["allowed_mentions"] = new JsonObject { ["parse"] = new JsonArray() },
+            ["allowed_mentions"] = Discord.NoMentions(),
         };
         var files = new List<(ReadOnlyMemory<byte> Bytes, string ContentType, string Name)>();
         if (post.Images.Count > 0)
@@ -119,13 +121,13 @@ internal sealed class DiscordChannel : ChannelBase
         {
             var embed = new JsonObject
             {
-                ["title"] = TextRules.Cut(card.Title, MaxTitle),
+                ["title"] = Text.Truncate(card.Title, MaxTitle),
                 ["url"] = link.AbsoluteUri,
             };
-            if (card.Description.Length > 0) embed["description"] = TextRules.Cut(card.Description, MaxDescription);
+            if (card.Description.Length > 0) embed["description"] = Text.Truncate(card.Description, MaxDescription);
             // Echo of Dreams' announcement embed carries these three; Discord's embed object takes them as is.
             if (card.Accent is { } accent) embed["color"] = accent & 0xFFFFFF;
-            if (!string.IsNullOrWhiteSpace(card.Footer)) embed["footer"] = new JsonObject { ["text"] = TextRules.Cut(card.Footer, 2048) };
+            if (!string.IsNullOrWhiteSpace(card.Footer)) embed["footer"] = new JsonObject { ["text"] = Text.Truncate(card.Footer, Discord.MaxFooter) };
             if (card.PublishedAt is { } at) embed["timestamp"] = at.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
             if (!card.Image.IsEmpty)
             {
@@ -135,7 +137,7 @@ internal sealed class DiscordChannel : ChannelBase
                     files.Add((f.Bytes, f.ContentType, name));
                     embed["image"] = new JsonObject { ["url"] = "attachment://" + name };
                     var attachment = new JsonObject { ["id"] = 0, ["filename"] = name };
-                    if (!string.IsNullOrWhiteSpace(card.ImageAlt)) attachment["description"] = TextRules.Cut(card.ImageAlt, MaxAlt);
+                    if (!string.IsNullOrWhiteSpace(card.ImageAlt)) attachment["description"] = Text.Truncate(card.ImageAlt, MaxAlt);
                     payload["attachments"] = new JsonArray(attachment);
                 }
             }
@@ -149,9 +151,9 @@ internal sealed class DiscordChannel : ChannelBase
         Uri endpoint;
         if (_webhook is not null)
         {
-            if (_webhook.Username is { } name) payload["username"] = name;
+            if (_webhook.Username is { } name) payload["username"] = Text.Truncate(name, Discord.MaxUsername);
             if (_webhook.AvatarUrl is { IsAbsoluteUri: true } avatar) payload["avatar_url"] = avatar.AbsoluteUri;
-            endpoint = new Uri($"{ApiBase}/webhooks/{_webhook.WebhookId}/{_webhook.Token}?wait=true");
+            endpoint = _webhook.Address.ExecuteUri;
         }
         else
         {
@@ -226,8 +228,8 @@ internal sealed class DiscordChannel : ChannelBase
     {
         if (_guildId is not null) return _guildId;
         using var request = new HttpRequestMessage(HttpMethod.Get, _webhook is not null
-            ? $"{ApiBase}/webhooks/{_webhook.WebhookId}/{_webhook.Token}"
-            : $"{ApiBase}/channels/{_bot!.ChannelId}");
+            ? _webhook.Address.Uri
+            : new Uri($"{ApiBase}/channels/{_bot!.ChannelId}"));
         Authorize(request);
         try
         {
@@ -242,16 +244,19 @@ internal sealed class DiscordChannel : ChannelBase
         }
     }
 
-    /// <summary>Discord's mapping: a dead webhook is 404 (Unknown Webhook) and means the credential is gone.</summary>
+    /// <summary>
+    /// Discord's mapping: what AgentKit.Channels reads as gone (401, 403, a dead webhook's 404 Unknown Webhook, 410) means
+    /// the credential no longer posts here, as it does for a notification.
+    /// </summary>
     private SocialFailure Failure(HttpResponseMessage response, JsonDocument? doc)
     {
         var message = doc is null ? null : Str(doc.RootElement, "message");
         var failure = FromStatus(response, message);
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (SendOutcome.Classify((int)response.StatusCode) == SendResult.Gone)
             return failure with { Kind = SocialFailureKind.Auth };
         if (failure.Kind == SocialFailureKind.RateLimited && failure.RetryAfter is null && doc is not null
-            && Number(doc.RootElement, "retry_after") is { } seconds and >= 0 and < 86_400)
-            return failure with { RetryAfter = TimeSpan.FromSeconds(seconds) };
+            && Number(doc.RootElement, "retry_after") is { } seconds and >= 0)
+            return failure with { RetryAfter = Wait(seconds) };
         return failure;
     }
 }

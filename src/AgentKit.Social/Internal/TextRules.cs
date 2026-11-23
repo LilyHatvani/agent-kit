@@ -220,14 +220,4 @@ internal static partial class TextRules
         if (s.EndsWith('/') && s.IndexOf('/', StringComparison.Ordinal) == s.Length - 1) s = s[..^1];
         return s.Length > 30 ? s[..27] + "..." : s;
     }
-
-    /// <summary>A field cut to <paramref name="max"/> UTF-16 units with an ellipsis, never splitting a grapheme.</summary>
-    public static string Cut(string value, int max)
-    {
-        if (value.Length <= max) return value;
-        var e = StringInfo.GetTextElementEnumerator(value);
-        var end = 0;
-        while (e.MoveNext() && e.ElementIndex + ((string)e.Current).Length <= max - 1) end = e.ElementIndex + ((string)e.Current).Length;
-        return value[..end] + "…";
-    }
 }

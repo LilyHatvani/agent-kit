@@ -7,6 +7,7 @@
     <Project Path="src/AgentKit.Fetch/AgentKit.Fetch.csproj" />
     <Project Path="src/AgentKit.Social/AgentKit.Social.csproj" />
     <Project Path="src/AgentKit.Channels/AgentKit.Channels.csproj" />
+    <Project Path="src/AgentKit.Mail/AgentKit.Mail.csproj" />
     <Project Path="src/AgentKit.Export/AgentKit.Export.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -17,6 +18,7 @@
     <Project Path="tests/AgentKit.Fetch.Tests/AgentKit.Fetch.Tests.csproj" />
     <Project Path="tests/AgentKit.Social.Tests/AgentKit.Social.Tests.csproj" />
     <Project Path="tests/AgentKit.Channels.Tests/AgentKit.Channels.Tests.csproj" />
+    <Project Path="tests/AgentKit.Mail.Tests/AgentKit.Mail.Tests.csproj" />
     <Project Path="tests/AgentKit.Export.Tests/AgentKit.Export.Tests.csproj" />
   </Folder>
 </Solution>

@@ -77,12 +77,34 @@ public static class StandardWebhooks
     public static bool Verify(string secret, string messageId, string timestamp, string signatures, ReadOnlySpan<byte> body, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(signatures);
-        if (!long.TryParse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture, out var ts)) return false;
-        if ((now - DateTimeOffset.FromUnixTimeSeconds(ts)).Duration() > Tolerance) return false;
+        if (!IsFresh(timestamp, now)) return false;
+        var ts = long.Parse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture);
         var expected = Encoding.ASCII.GetBytes(Sign(secret, messageId, ts, body));
         foreach (var candidate in signatures.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             if (CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(candidate), expected)) return true;
         return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="timestamp"/> is Unix seconds (digits only) within <see cref="Tolerance"/> of
+    /// <paramref name="now"/>, either side. Compared as seconds, so a timestamp past the year 9999 is stale, never a throw.
+    /// </summary>
+    public static bool IsFresh(string? timestamp, DateTimeOffset now)
+    {
+        if (!long.TryParse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture, out var ts)) return false;
+        var nowSeconds = now.ToUnixTimeSeconds();
+        var tolerance = (long)Tolerance.TotalSeconds;
+        return ts >= nowSeconds - tolerance && ts <= nowSeconds + tolerance;
+    }
+
+    /// <summary>Why <paramref name="secret"/> can't sign or verify, or null: <c>whsec_</c> (optional) followed by non-empty base64.</summary>
+    public static string? SecretRefusal(string? secret)
+    {
+        const string Why = "A webhook secret is whsec_ followed by base64.";
+        if (string.IsNullOrEmpty(secret)) return Why;
+        var b64 = secret.StartsWith("whsec_", StringComparison.Ordinal) ? secret["whsec_".Length..] : secret;
+        var buffer = new byte[b64.Length];
+        return Convert.TryFromBase64String(b64, buffer, out var n) && n > 0 ? null : Why;
     }
 
     private static byte[] Key(string secret)

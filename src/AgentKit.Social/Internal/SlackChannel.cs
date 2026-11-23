@@ -1,6 +1,6 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using AgentKit.Channels;
 
 namespace AgentKit.Social.Internal;
 
@@ -78,25 +78,24 @@ internal sealed class SlackChannel : ChannelBase
     /// <summary>The text with Slack's three escapes, and the link (where it stands as its own word) in Slack's link form.</summary>
     internal static string Format(string text, Uri? link)
     {
-        var escaped = Escape(text);
+        // Slack's three escapes are AgentKit.Channels' (the ones its Slack notifications send).
+        var escaped = Slack.Escape(text);
         if (link is null) return escaped;
-        var plain = Escape(link.AbsoluteUri);
+        var plain = Slack.Escape(link.AbsoluteUri);
         var at = escaped.LastIndexOf(plain, StringComparison.Ordinal);
         if (at < 0) return escaped;
         // A | in the address would end Slack's link early, so it is written percent-encoded inside the brackets.
         return escaped[..at] + "<" + plain.Replace("|", "%7C", StringComparison.Ordinal) + ">" + escaped[(at + plain.Length)..];
     }
 
-    internal static string Escape(string text) =>
-        text.Replace("&", "&amp;", StringComparison.Ordinal).Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal);
-
     /// <summary>
-    /// Slack's codes: a webhook that is gone or a channel it can no longer post in (403, 404, 410: <c>no_service</c>,
-    /// <c>channel_not_found</c>, <c>channel_is_archived</c>, <c>action_prohibited</c>…) is the credential; a 400 is the post.
+    /// Slack's codes: a webhook that is gone or a channel it can no longer post in (401, 403, 404, 410: <c>no_service</c>,
+    /// <c>channel_not_found</c>, <c>channel_is_archived</c>, <c>action_prohibited</c>…) is the credential, what
+    /// AgentKit.Channels reads as gone; a 400 is the post.
     /// </summary>
     private SocialFailure Failure(HttpResponseMessage response, string body)
     {
         var failure = FromStatus(response, body.Length is > 0 and <= 200 ? body : null);
-        return response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone ? failure with { Kind = SocialFailureKind.Auth } : failure;
+        return SendOutcome.Classify((int)response.StatusCode) == SendResult.Gone ? failure with { Kind = SocialFailureKind.Auth } : failure;
     }
 }

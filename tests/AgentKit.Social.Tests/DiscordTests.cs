@@ -270,6 +270,113 @@ public sealed class DiscordTests : IDisposable
         Assert.Contains("@everyone", payload.RootElement.GetProperty("content").GetString(), StringComparison.Ordinal);
     }
 
+    // The pieces read by AgentKit.Channels (2026-11-22): the webhook URL, the status, Retry-After, the name's limit.
+
+    [Theory]
+    [InlineData(410, SocialFailureKind.Auth, false)]       // gone, as Channels reads it: the webhook no longer posts
+    [InlineData(408, SocialFailureKind.Transient, false)]  // Discord didn't act on it: send again
+    [InlineData(425, SocialFailureKind.Transient, false)]
+    [InlineData(503, SocialFailureKind.Transient, true)]
+    [InlineData(413, SocialFailureKind.Rejected, false)]
+    public async Task A_refused_answer_is_read_as_channels_reads_a_status(int status, SocialFailureKind kind, bool mayHavePosted)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json((HttpStatusCode)status, new { message = "Nope", code = 0 });
+        var result = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(kind, result.Failure!.Kind);
+        Assert.Equal(mayHavePosted, result.Failure.MayHavePosted);
+        Assert.DoesNotContain(WebhookToken, result.Failure.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("1e400")]
+    [InlineData("1e300")]
+    [InlineData("-5")]
+    [InlineData("+30")]
+    public async Task A_429_whose_retry_after_is_nonsense_takes_the_wait_from_the_body(string value)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
+            new { message = "You are being rate limited.", retry_after = 1.5, global = false }, ("Retry-After", value));
+        var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(SocialFailureKind.RateLimited, limited.Failure!.Kind);
+        Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure.RetryAfter);
+    }
+
+    /// <summary>The reset headers are read as strictly as Retry-After: a sign or an exponent is no header, so Discord's body decides.</summary>
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("+2")]
+    [InlineData("1e3")]
+    [InlineData("1e300")]
+    public async Task A_429_whose_reset_after_is_nonsense_takes_the_wait_from_the_body(string value)
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
+            new { message = "You are being rate limited.", retry_after = 1.5, global = false }, ("X-RateLimit-Reset-After", value));
+        var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(SocialFailureKind.RateLimited, limited.Failure!.Kind);
+        Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure.RetryAfter);
+    }
+
+    /// <summary>Retry-After is the standard header, so a well-formed one goes before Discord's own reset header and the body.</summary>
+    [Fact]
+    public async Task A_well_formed_retry_after_goes_first()
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.TooManyRequests,
+            new { message = "You are being rate limited.", retry_after = 30.0, global = false }, ("Retry-After", "1.5"), ("X-RateLimit-Reset-After", "30"));
+        var limited = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        Assert.Equal(TimeSpan.FromSeconds(1.5), limited.Failure!.RetryAfter);
+    }
+
+    [Fact]
+    public async Task A_card_title_cut_drops_the_space_before_the_ellipsis()
+    {
+        var post = Post() with { Card = new LinkCard { Title = new string('a', 254) + " bb" } };
+        await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(post);
+        Assert.Equal(new string('a', 254) + "…", _host.Network.Seen[0].Json.GetProperty("embeds")[0].GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task A_full_width_host_is_discord_com_and_the_post_goes_there()
+    {
+        // IDN maps ｄ (U+FF44) to d, so the host is discord.com itself; whatever was typed, the request goes to the canonical address.
+        var hook = new DiscordWebhook(new Uri($"https://ｄiscord.com/api/webhooks/1234567890/{WebhookToken}"));
+        var result = await _host.Channels.Discord(hook).PostAsync(Post());
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal("discord.com", _host.Network.Seen[0].Uri.Host);
+    }
+
+    [Fact]
+    public async Task A_long_refusal_is_cut_without_splitting_an_emoji()
+    {
+        _host.Network.Respond = _ => FakeNetwork.Json(HttpStatusCode.BadRequest, new { message = new string('a', 270) + "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", code = 0 });
+        var result = await _host.Channels.Discord(new DiscordWebhook(WebhookUrl)).PostAsync(Post());
+        var message = result.Failure!.Message;
+        Assert.InRange(message.Length, 1, 300);
+        Assert.EndsWith("…", message, StringComparison.Ordinal);
+        Assert.False(char.IsHighSurrogate(message[^2]));
+    }
+
+    [Fact]
+    public async Task A_canary_webhook_posts_to_discord_com_and_a_long_name_is_cut_to_80()
+    {
+        var hook = new DiscordWebhook(new Uri($"https://canary.discord.com/api/webhooks/1234567890/{WebhookToken}")) { Username = new string('n', 100) };
+        var result = await _host.Channels.Discord(hook).PostAsync(Post());
+        Assert.True(result.Posted, result.Failure?.Message);
+        Assert.Equal(new Uri($"https://discord.com/api/v10/webhooks/1234567890/{WebhookToken}?wait=true"), _host.Network.Seen[0].Uri);
+        Assert.Equal(80, _host.Network.Seen[0].Json.GetProperty("username").GetString()!.Length);
+        Assert.DoesNotContain(WebhookToken, hook.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("https://discord.com/api/webhooks/+1/abcdefghijklmnop")]   // a sign the old reading took
+    [InlineData("https://discord.com/api/webhooks/1/abcdefghi")]           // a token cut short
+    [InlineData("https://discord.com/api/x/webhooks/1/abcdefghijklmnop")]
+    public void A_webhook_url_channels_refuses_or_a_short_token_is_refused_without_repeating_it(string url)
+    {
+        var e = Assert.Throws<ArgumentException>(() => new DiscordWebhook(new Uri(url)));
+        Assert.DoesNotContain("abcdefghi", e.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task A_cancel_after_the_message_is_up_still_records_it_as_posted()
     {

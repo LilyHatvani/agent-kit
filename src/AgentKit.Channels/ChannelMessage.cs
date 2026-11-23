@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 
 namespace AgentKit.Channels;
@@ -14,17 +15,27 @@ namespace AgentKit.Channels;
 /// <param name="Data">Structured detail for webhooks (ids, states). Chat destinations ignore it.</param>
 public sealed record ChannelMessage(string Type, string Title, string Body, Uri? Link, JsonObject? Data = null);
 
-/// <summary>Shortening text to a destination's limit.</summary>
+/// <summary>Shortening text to a destination's limit. AgentKit.Social cuts its Discord fields with it too.</summary>
 public static class Text
 {
-    /// <summary><paramref name="text"/> cut to at most <paramref name="max"/> characters, ending in "…" when cut, never inside a surrogate pair.</summary>
+    /// <summary>
+    /// <paramref name="text"/> cut to at most <paramref name="max"/> UTF-16 units, ending in "…" when cut. The cut falls
+    /// between user-perceived characters (extended grapheme clusters), so it never splits a surrogate pair, a flag, an
+    /// emoji joined with ZWJ or a letter from its accent; whitespace before the "…" is dropped.
+    /// </summary>
     public static string Truncate(string text, int max)
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
         if (text.Length <= max) return text;
-        var cut = max - 1;
-        if (char.IsHighSurrogate(text[cut - 1])) cut--;
-        return text[..cut].TrimEnd() + "…";
+        var end = 0;
+        var e = StringInfo.GetTextElementEnumerator(text);
+        while (e.MoveNext())
+        {
+            var next = e.ElementIndex + ((string)e.Current).Length;
+            if (next > max - 1) break;
+            end = next;
+        }
+        return text[..end].TrimEnd() + "…";
     }
 }

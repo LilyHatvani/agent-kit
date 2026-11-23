@@ -37,29 +37,62 @@ public sealed record SendOutcome(SendResult Result, int? Status, TimeSpan? Retry
     {
         ArgumentNullException.ThrowIfNull(response);
         var status = (int)response.StatusCode;
-        if (status is >= 200 and < 300) return new(SendResult.Sent, status, null, null);
+        var result = Classify(status);
+        if (result == SendResult.Sent) return new(SendResult.Sent, status, null, null);
         var error = $"{status} {response.ReasonPhrase}".Trim();
         var body = await HeadAsync(response, ct).ConfigureAwait(false);
         if (body.Length > 0) error += ": " + body;
-        return status switch
+        return result switch
         {
-            429 => new(SendResult.Retry, status, RetryAfterOf(response, now) ?? TimeSpan.FromMinutes(1), Clip(error)),
-            408 or 425 or >= 500 => new(SendResult.Retry, status, RetryAfterOf(response, now), Clip(error)),
-            401 or 403 or 404 or 410 => new(SendResult.Gone, status, null, Clip(error)),
-            _ => new(SendResult.Failed, status, null, Clip(error)),
+            SendResult.Retry when status == 429 => new(SendResult.Retry, status, RetryAfterOf(response, now) ?? TimeSpan.FromMinutes(1), Clip(error)),
+            SendResult.Retry => new(SendResult.Retry, status, RetryAfterOf(response, now), Clip(error)),
+            _ => new(result, status, null, Clip(error)),
         };
     }
 
-    private static TimeSpan? RetryAfterOf(HttpResponseMessage response, DateTimeOffset now)
+    /// <summary>
+    /// What an HTTP status means for a delivery, without reading the body: 2xx sent; 429, 408, 425 and 5xx retry; 401,
+    /// 403, 404 and 410 gone; anything else failed. <see cref="ReadAsync"/> reads every answer with it, and AgentKit.Social
+    /// reads a network's refusal with it before saying what it means for a post.
+    /// </summary>
+    public static SendResult Classify(int status) => status switch
     {
+        >= 200 and < 300 => SendResult.Sent,
+        429 or 408 or 425 or >= 500 => SendResult.Retry,
+        401 or 403 or 404 or 410 => SendResult.Gone,
+        _ => SendResult.Failed,
+    };
+
+    /// <summary>
+    /// How long <paramref name="response"/>'s <c>Retry-After</c> asks to wait: whole seconds or an HTTP date (RFC 9110),
+    /// or seconds with a fraction as some servers write them, measured from <paramref name="now"/> and kept within
+    /// <paramref name="max"/> (default <see cref="MaxRetryAfter"/>) by <c>Bounded</c>. Anything else (a sign, an exponent,
+    /// <c>NaN</c>, words) is no header, so a caller's other sources of a wait still count. Null when there is none.
+    /// </summary>
+    public static TimeSpan? RetryAfterOf(HttpResponseMessage response, DateTimeOffset now, TimeSpan? max = null)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        var cap = max ?? MaxRetryAfter;
+        ArgumentOutOfRangeException.ThrowIfLessThan(cap, TimeSpan.Zero, nameof(max));
         var h = response.Headers.RetryAfter;
-        TimeSpan? wait = h?.Delta ?? (h?.Date is { } d ? d - now : null);
-        if (wait is null && response.Headers.TryGetValues("Retry-After", out var raw)
-            && double.TryParse(raw.FirstOrDefault(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-            wait = TimeSpan.FromSeconds(seconds);
-        if (wait is null) return null;
-        return wait < TimeSpan.Zero ? TimeSpan.Zero : wait > MaxRetryAfter ? MaxRetryAfter : wait;
+        if (h?.Delta is { } delta) return Bounded(delta, cap);
+        if (h?.Date is { } date) return Bounded(date - now, cap);
+        // Digits and one decimal point only: no sign, no exponent, no NaN or Infinity.
+        return response.Headers.TryGetValues("Retry-After", out var raw)
+            && double.TryParse(raw.FirstOrDefault(), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var seconds)
+            ? Bounded(seconds, cap)
+            : null;
     }
+
+    /// <summary>A wait kept between none and <paramref name="max"/>.</summary>
+    public static TimeSpan Bounded(TimeSpan wait, TimeSpan max) => wait < TimeSpan.Zero ? TimeSpan.Zero : wait > max ? max : wait;
+
+    /// <summary>
+    /// A wait given in seconds, kept between none and <paramref name="max"/>; null when it isn't a finite number. Compared
+    /// as seconds before a <see cref="TimeSpan"/> is made, because <see cref="TimeSpan.FromSeconds(double)"/> throws past its range.
+    /// </summary>
+    public static TimeSpan? Bounded(double seconds, TimeSpan max) =>
+        !double.IsFinite(seconds) ? null : seconds <= 0 ? TimeSpan.Zero : seconds >= max.TotalSeconds ? max : TimeSpan.FromSeconds(seconds);
 
     private static async Task<string> HeadAsync(HttpResponseMessage response, CancellationToken ct)
     {

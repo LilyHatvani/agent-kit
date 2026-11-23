@@ -1,3 +1,5 @@
+using AgentKit.Channels;
+
 namespace AgentKit.Social;
 
 // The account types hold credentials, so none is a record: a record's ToString prints every property. Each ToString
@@ -70,22 +72,38 @@ public sealed class MastodonAccount(Uri instance, string accessToken)
 }
 
 /// <summary>A Discord incoming webhook (Server settings, Integrations, Webhooks, Copy webhook URL).</summary>
-/// <param name="url">The webhook URL, <c>https://discord.com/api/webhooks/&lt;id&gt;/&lt;token&gt;</c>. The token in it is the credential.</param>
+/// <param name="url">
+/// The webhook URL, <c>https://discord.com/api/webhooks/&lt;id&gt;/&lt;token&gt;</c>. The token in it is the credential. It is
+/// read by AgentKit.Channels' <see cref="DiscordWebhookAddress"/>, the one reading of a webhook URL both packages use; a
+/// token shorter than 10 characters (a paste cut short) is refused here too. No refusal repeats the URL.
+/// </param>
 public sealed class DiscordWebhook(Uri url)
 {
+    private const int MinToken = 10;
+
+    internal DiscordWebhookAddress Address { get; } = Read(url);
+
     /// <summary>The webhook's id (not secret).</summary>
-    public string WebhookId { get; } = DiscordWebhookUrl.Parse(url).Id;
+    public string WebhookId => Address.Id;
 
-    internal string Token { get; } = DiscordWebhookUrl.Parse(url).Token;
+    internal string Token => Address.Token;
 
-    /// <summary>The name the message shows instead of the webhook's own; null to keep it.</summary>
+    /// <summary>The name the message shows instead of the webhook's own; null to keep it. Cut to Discord's 80 characters.</summary>
     public string? Username { get; init; }
 
     /// <summary>The avatar the message shows instead of the webhook's own; null to keep it.</summary>
     public Uri? AvatarUrl { get; init; }
 
     /// <inheritdoc />
-    public override string ToString() => $"Discord webhook {WebhookId} (token hidden)";
+    public override string ToString() => Address.ToString();
+
+    private static DiscordWebhookAddress Read(Uri url)
+    {
+        var address = DiscordWebhookAddress.Parse(url);
+        return address.Token.Length >= MinToken
+            ? address
+            : throw new ArgumentException("That isn't a whole Discord webhook URL: copy it again from the channel's Integrations → Webhooks.", nameof(url));
+    }
 }
 
 /// <summary>A Discord bot posting in one channel. The bot needs View Channel, Send Messages and Embed Links there.</summary>
@@ -221,42 +239,19 @@ public sealed class XTokenRefresh
     public override string ToString() => Failure is null ? "X token refreshed" : $"X token refresh failed: {Failure.Kind}";
 }
 
-internal readonly record struct DiscordWebhookUrl(string Id, string Token)
-{
-    private static readonly string[] Hosts = ["discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"];
-
-    /// <summary>Takes only <c>https://discord.com/api[/v N]/webhooks/&lt;id&gt;/&lt;token&gt;</c>; the error never repeats the URL, which holds the token.</summary>
-    public static DiscordWebhookUrl Parse(Uri url)
-    {
-        ArgumentNullException.ThrowIfNull(url);
-        const string Shape = "A Discord webhook URL looks like https://discord.com/api/webhooks/<id>/<token>.";
-        if (!url.IsAbsoluteUri || url.Scheme != Uri.UriSchemeHttps || !Hosts.Contains(url.Host, StringComparer.OrdinalIgnoreCase)
-            || url.UserInfo.Length > 0 || !url.IsDefaultPort)
-            throw new ArgumentException(Shape, nameof(url));
-        var parts = url.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var i = Array.IndexOf(parts, "webhooks");
-        if (parts.Length < 3 || parts[0] != "api" || i < 1 || i > 2 || parts.Length != i + 3
-            || (i == 2 && !parts[1].StartsWith('v')) || !ulong.TryParse(parts[i + 1], out _) || parts[i + 2].Length < 10)
-            throw new ArgumentException(Shape, nameof(url));
-        return new DiscordWebhookUrl(parts[i + 1], parts[i + 2]);
-    }
-
-    public override string ToString() => $"webhook {Id}";
-}
-
 /// <summary>A Slack incoming webhook (an app's Incoming Webhooks page, Add New Webhook to Workspace, Copy).</summary>
 public sealed class SlackWebhook
 {
     /// <summary>The webhook.</summary>
-    /// <param name="url">The webhook URL, <c>https://hooks.slack.com/services/…</c>. The whole path is the credential.</param>
+    /// <param name="url">
+    /// The webhook URL, <c>https://hooks.slack.com/services/…</c>. The whole path is the credential. It is checked by
+    /// AgentKit.Channels' <see cref="Slack.WebhookRefusal"/>, the one check both packages use.
+    /// </param>
     /// <exception cref="ArgumentException">It isn't a Slack incoming webhook URL.</exception>
     public SlackWebhook(Uri url)
     {
         ArgumentNullException.ThrowIfNull(url);
-        if (!(url.IsAbsoluteUri && url.Scheme == Uri.UriSchemeHttps && url.IdnHost.Equals("hooks.slack.com", StringComparison.OrdinalIgnoreCase)
-              && url.UserInfo.Length == 0 && url.IsDefaultPort && url.Query.Length == 0 && url.Fragment.Length == 0
-              && url.AbsolutePath.StartsWith("/services/", StringComparison.Ordinal) && url.AbsolutePath.Length > "/services/".Length))
-            throw new ArgumentException("A Slack incoming webhook URL starts with https://hooks.slack.com/services/.", nameof(url));
+        if (Slack.WebhookRefusal(url) is { } refusal) throw new ArgumentException(refusal, nameof(url));
         Url = new Uri("https://hooks.slack.com" + url.AbsolutePath);
     }
 

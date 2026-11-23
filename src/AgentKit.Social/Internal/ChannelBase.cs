@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AgentKit.Channels;
 using AgentKit.Fetch;
 using Microsoft.Extensions.Logging;
 
@@ -218,8 +219,10 @@ internal abstract class ChannelBase : ISocialChannel
     }
 
     /// <summary>
-    /// The usual mapping of a refused HTTP answer: 401 and 403 are the credentials, 429 a wait, other 4xx a rejection with
-    /// the network's message, 5xx transient (and the post may be up).
+    /// The usual mapping of a refused HTTP answer, on AgentKit.Channels' one reading of a status
+    /// (<see cref="SendOutcome.Classify"/>): 401 and 403 are the credentials, 429 a wait, 5xx transient (and the post may
+    /// be up), 408 and 425 transient (the network didn't act on the request), other 4xx a rejection with the network's
+    /// message. A 404 or 410 stays a rejection here; Discord's adapter reads it as a webhook that is gone.
     /// </summary>
     protected SocialFailure FromStatus(HttpResponseMessage response, string? networkMessage)
     {
@@ -227,11 +230,12 @@ internal abstract class ChannelBase : ISocialChannel
         var status = (int)response.StatusCode;
         var said = Clean(networkMessage);
         var detail = said.Length > 0 ? $": {said}" : ".";
-        return status switch
+        return (SendOutcome.Classify(status), status) switch
         {
-            401 or 403 => new SocialFailure(SocialFailureKind.Auth, Clean($"{Name} refused the credentials ({status}){detail}")),
-            429 => new SocialFailure(SocialFailureKind.RateLimited, Clean($"{Name} asked to wait{detail}"), RetryAfter(response)),
-            >= 500 => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} had a server error ({status}){detail}"), MayHavePosted: true),
+            (SendResult.Gone, 401 or 403) => new SocialFailure(SocialFailureKind.Auth, Clean($"{Name} refused the credentials ({status}){detail}")),
+            (SendResult.Retry, 429) => new SocialFailure(SocialFailureKind.RateLimited, Clean($"{Name} asked to wait{detail}"), RetryAfter(response)),
+            (SendResult.Retry, >= 500) => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} had a server error ({status}){detail}"), MayHavePosted: true),
+            (SendResult.Retry, _) => new SocialFailure(SocialFailureKind.Transient, Clean($"{Name} didn't take the request in time and asked for it again ({status}){detail}")),
             _ => new SocialFailure(SocialFailureKind.Rejected, Clean($"{Name} refused the post ({status}){detail}")),
         };
     }
@@ -249,7 +253,8 @@ internal abstract class ChannelBase : ISocialChannel
     };
 
     /// <summary>
-    /// How long a 429 asks to wait: <c>Retry-After</c> (seconds or a date), then the network's reset headers
+    /// How long a 429 asks to wait: <c>Retry-After</c> (seconds or a date), read by AgentKit.Channels'
+    /// <see cref="SendOutcome.RetryAfterOf"/> with this package's one-day bound, then the network's reset headers
     /// (<c>ratelimit-reset</c> and <c>x-rate-limit-reset</c> in Unix seconds, <c>X-RateLimit-Reset</c> as Unix seconds or an ISO 8601 date,
     /// <c>X-RateLimit-Reset-After</c> in seconds).
     /// </summary>
@@ -257,18 +262,16 @@ internal abstract class ChannelBase : ISocialChannel
     {
         ArgumentNullException.ThrowIfNull(response);
         var now = Now;
-        if (response.Headers.RetryAfter is { } ra)
-        {
-            if (ra.Delta is { } d) return Positive(d);
-            if (ra.Date is { } date) return Positive(date - now);
-        }
+        if (SendOutcome.RetryAfterOf(response, now, MaxWait) is { } retryAfter) return retryAfter;
+        // Read as strictly as RetryAfterOf reads Retry-After: digits and one decimal point, no sign, no exponent, so a
+        // malformed header is no header and the next source (a network's body retry_after) still decides.
         if (Header(response, "X-RateLimit-Reset-After") is { } after
-            && double.TryParse(after, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+            && double.TryParse(after, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var seconds))
             return Wait(seconds);
         foreach (var name in new[] { "ratelimit-reset", "x-rate-limit-reset", "X-RateLimit-Reset" })
         {
             if (Header(response, name) is not { } value) continue;
-            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch) && double.IsFinite(epoch) && epoch > 1_000_000_000)
+            if (double.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var epoch) && double.IsFinite(epoch) && epoch > 1_000_000_000)
             {
                 // Unix seconds, or milliseconds from a server that writes those.
                 var unixSeconds = epoch > 100_000_000_000 ? epoch / 1000 : epoch;
@@ -280,12 +283,13 @@ internal abstract class ChannelBase : ISocialChannel
         return null;
     }
 
-    private static TimeSpan Positive(TimeSpan t) => t < TimeSpan.Zero ? TimeSpan.Zero : t > MaxWait ? MaxWait : t;
+    /// <summary>A wait kept between none and a day (AgentKit.Channels' <see cref="SendOutcome.Bounded(TimeSpan, TimeSpan)"/>).</summary>
+    private static TimeSpan Positive(TimeSpan t) => SendOutcome.Bounded(t, MaxWait);
 
     /// <summary>A wait in seconds, kept between none and a day: a header saying more (or nonsense) is not believed.</summary>
-    private static TimeSpan? Wait(double seconds) =>
-        !double.IsFinite(seconds) ? null : seconds <= 0 ? TimeSpan.Zero : seconds >= MaxWait.TotalSeconds ? MaxWait : TimeSpan.FromSeconds(seconds);
+    protected static TimeSpan? Wait(double seconds) => SendOutcome.Bounded(seconds, MaxWait);
 
+    /// <summary>The longest wait a refusal is believed to ask for (the README's "at most a day").</summary>
     private static readonly TimeSpan MaxWait = TimeSpan.FromDays(1);
 
     private static string? Header(HttpResponseMessage response, string name) =>
@@ -301,7 +305,8 @@ internal abstract class ChannelBase : ISocialChannel
         var s = string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
         foreach (var secret in _secrets)
             s = s.Replace(secret, "***", StringComparison.Ordinal);
-        return s.Length > MaxMessage ? s[..(MaxMessage - 1)] + "…" : s;
+        // AgentKit.Channels' cut: never inside a surrogate pair or an emoji.
+        return Text.Truncate(s, MaxMessage);
     }
 
     /// <summary>Reads a JSON body, or null when it isn't JSON.</summary>
