@@ -111,6 +111,34 @@ public sealed class SocialChannels
     }
 
     /// <summary>
+    /// A Threads profile, posting a text post with the link's preview through Meta's Threads API. Meta has no idempotency
+    /// key, so a retry after a lost answer is unconfirmed.
+    /// </summary>
+    public ISocialChannel Threads(ThreadsAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+        return new ThreadsChannel(_context, account);
+    }
+
+    /// <summary>A Facebook Page, posting the words with the link (Facebook shows its preview) through the Graph API.</summary>
+    public ISocialChannel Facebook(FacebookPage page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        return new FacebookPageChannel(_context, page);
+    }
+
+    /// <summary>
+    /// Renews a long-lived Threads token for 60 more days (<c>GET {host}/refresh_access_token?grant_type=th_refresh_token</c>,
+    /// https://developers.facebook.com/documentation/threads/get-started/long-lived-tokens). The token must be at least a day
+    /// old and not expired; store the one the answer carries.
+    /// </summary>
+    public Task<ThreadsTokenRefresh> RefreshThreadsTokenAsync(ThreadsAccount account, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+        return new ThreadsChannel(_context, account).RefreshAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Trades an X refresh token for a new pair (<c>POST https://api.x.com/2/oauth2/token</c>,
     /// https://docs.x.com/resources/fundamentals/authentication/oauth-2-0/user-access-token). The refresh token needs the
     /// <c>offline.access</c> scope. Store the refresh token the answer carries before using the access token: the one sent may

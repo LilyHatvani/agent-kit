@@ -249,6 +249,8 @@ internal abstract class ChannelBase : ISocialChannel
         SocialNetworks.X => "X",
         SocialNetworks.Slack => "Slack",
         SocialNetworks.Telegram => "Telegram",
+        SocialNetworks.Threads => "Threads",
+        SocialNetworks.Facebook => "Facebook",
         _ => Network,
     };
 

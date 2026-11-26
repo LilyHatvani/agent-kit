@@ -38,6 +38,13 @@ Per package, newest first. Versions are `0.1.<CI run number>`; an entry names th
 
 ### Unreleased
 
+- **Threads and Facebook Pages.** `SocialChannels.Threads(ThreadsAccount)` posts a text post with the link's preview
+  (a container read until `FINISHED`, then `threads_publish`; the post's `permalink`), counting 500 characters with an
+  emoji as its UTF-8 bytes; `RefreshThreadsTokenAsync` renews the 60-day token. `SocialChannels.Facebook(FacebookPage)`
+  posts the words and the link to a Page's feed (Graph `v27.0`, `permalink_url`). Both read Meta's error codes (190
+  and permissions as `Auth`, throttling and 368 as `RateLimited`, 506 as `Rejected`), send no pictures (with a note),
+  and have no idempotency key, so a retry after a lost answer is `Unconfirmed`. `SocialNetworks.Threads` and
+  `SocialNetworks.Facebook` name them.
 - **Fixed:** a handler from the host's `ConfigureHttpClientDefaults` ran on the API client, so a standard resilience
   handler retried a 5xx up to three times: a second post on a network with no idempotency key. The API client clears
   those handlers now; retries are the ledger's. A handler the host adds to `SocialDefaults.ApiHttpClientName` by name

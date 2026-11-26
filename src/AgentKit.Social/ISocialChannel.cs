@@ -20,6 +20,12 @@ public static class SocialNetworks
 
     /// <summary>A Telegram channel, group or chat, through a bot.</summary>
     public const string Telegram = "telegram";
+
+    /// <summary>Threads, through Meta's Threads API.</summary>
+    public const string Threads = "threads";
+
+    /// <summary>A Facebook Page, through the Graph API.</summary>
+    public const string Facebook = "facebook";
 }
 
 /// <summary>
@@ -34,7 +40,8 @@ public interface ISocialChannel
     /// <summary>
     /// A stable name for this account that holds no secret: <c>bluesky:&lt;identifier&gt;</c>,
     /// <c>mastodon:&lt;instance host&gt;</c>, <c>discord-webhook:&lt;webhook id&gt;</c>, <c>discord:&lt;channel id&gt;</c>, <c>x</c>,
-    /// <c>slack-webhook:&lt;a hash of the URL&gt;</c>, <c>telegram:&lt;chat&gt;</c>.
+    /// <c>slack-webhook:&lt;a hash of the URL&gt;</c>, <c>telegram:&lt;chat&gt;</c>, <c>threads:&lt;user id or me&gt;</c>,
+    /// <c>facebook:&lt;page id&gt;</c>.
     /// Mastodon's and X's don't tell two accounts on the same instance or network apart, so the host's channel id
     /// belongs in <see cref="SocialPost.IdempotencyKey"/>.
     /// </summary>

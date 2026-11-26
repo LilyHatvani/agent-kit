@@ -1,6 +1,6 @@
 # AgentKit.Social
 
-Post to social networks from a server: Bluesky, Mastodon, Discord, X, Slack and Telegram behind one contract. Pictures go as each
+Post to social networks from a server: Bluesky, Mastodon, Discord, X, Slack, Telegram, Threads and Facebook Pages behind one contract. Pictures go as each
 network's own media; a link card is the fallback for a post without pictures. Built for a product that shares what it
 publishes (a blog post, an announcement), with no product names in the API. Nothing is stored: the host passes
 credentials in and keeps its own record of what was posted.
@@ -111,6 +111,8 @@ post's `IdempotencyKey`. The host backs it with its own table:
 | X | none (X refuses an exact repeat of a recent post with 403, which arrives as `Rejected`) | `Unconfirmed` |
 | Slack webhook | none | `Unconfirmed` |
 | Telegram | none (no client id on a send) | `Unconfirmed` |
+| Threads | none documented | `Unconfirmed` |
+| Facebook Page | none (Facebook refuses an immediate duplicate with code 506, which arrives as `Rejected`) | `Unconfirmed` |
 
 `Unconfirmed` means a person checks the network. If nothing is there, `PostAsync(channel, post, resendUnconfirmed: true)`
 sends again. A refusal that created nothing (a rate limit, a credential, a validation error, a picture that didn't
@@ -210,6 +212,33 @@ is an administrator allowed to post).
   (`migrate_to_chat_id`, named in the message) are `Auth`: the setting needs changing. A 429 waits
   `parameters.retry_after`.
 - The token travels in the request path, like a Discord webhook's: see *Traces* below.
+
+**Threads** (Meta's Threads API, a long-lived user token with `threads_basic` and `threads_content_publish`; before
+App Review an app posts only for its Threads testers, added under App roles and accepted in Threads' settings).
+- A container, `POST https://graph.threads.net/v1.0/{user}/threads` with `media_type=TEXT`, `text` and
+  `link_attachment` (the link's preview), read by `?fields=status` until `FINISHED` (every
+  `ContainerPollInterval`, at most `ContainerPollAttempts` times; `ERROR` or `EXPIRED` posted nothing), then
+  `POST …/threads_publish` with `creation_id`. The address is the post's `permalink`, read after (best effort).
+- 500 characters, an emoji counted as its UTF-8 bytes (https://developers.facebook.com/docs/threads/overview). The
+  link is the preview, not part of the text; hashtags aren't added (a Threads topic is one per post, set apart).
+- No pictures: Threads takes them only by a public address, never as bytes. A post with pictures goes as a link post,
+  with a note.
+- The token lasts 60 days: `RefreshThreadsTokenAsync(account)` renews it (`GET …/refresh_access_token?grant_type=th_refresh_token`)
+  once it is a day old and before it expires. Store the token the answer carries.
+- The token goes as Meta documents it, the `access_token` parameter (form or query); a message that echoes it is
+  scrubbed. 250 posts a profile a day; more than 5 links in a post are refused.
+
+**Facebook Page** (Graph API, a Page access token with `pages_manage_posts` and `pages_read_engagement`, from a person
+with a role on the Page that may post; a Page token made from a long-lived user token has no expiry date). Facebook has
+no API to post on a person's own profile.
+- `POST https://graph.facebook.com/{GraphVersion}/{page}/feed` with `message` (the words and the tags) and `link`;
+  Facebook builds the preview. The id is `{page}_{post}`; the address is `permalink_url`, read after (best effort),
+  else `https://www.facebook.com/{id}`. `GraphVersion` is `v27.0` by default: Meta retires each version about two
+  years after it ships.
+- No pictures uploaded: Facebook shows the link's own picture; a note says so.
+- Meta's error codes decide the category for both: 190 (an expired or invalid token) and 10 or 200–299 (a missing
+  permission) are `Auth`; 4, 17, 32, 341, 613, 80001 (throttling) and 368 (a temporary block) are `RateLimited`; 506
+  (a duplicate) is `Rejected`.
 
 ## Credentials and egress
 
